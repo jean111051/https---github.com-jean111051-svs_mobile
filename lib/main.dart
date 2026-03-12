@@ -5,10 +5,11 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -144,9 +145,13 @@ class _ReportPageState extends State<ReportPage> {
   Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     final panicNum = prefs.getString('panic_number');
+    final baseUrl = prefs.getString('base_url');
     setState(() {
       _panicNumber = panicNum;
       _panicCtrl.text = _formatPhMobile(_panicNumber);
+      if (baseUrl != null && baseUrl.trim().isNotEmpty) {
+        _baseUrl = baseUrl.trim();
+      }
     });
   }
 
@@ -179,6 +184,9 @@ class _ReportPageState extends State<ReportPage> {
     final candidates = <String>[];
     if (_baseUrlEnv.trim().isNotEmpty) {
       candidates.add(_normalizedBaseUrl(_baseUrlEnv));
+    }
+    if (_baseUrl.trim().isNotEmpty) {
+      candidates.add(_normalizedBaseUrl(_baseUrl));
     }
     if (!kIsWeb && Platform.isAndroid) {
       candidates.add('http://10.0.2.2:3000');
@@ -218,10 +226,99 @@ class _ReportPageState extends State<ReportPage> {
     }
   }
 
-  Future<bool> _ensureBaseUrlReady() async {
+  Future<bool> _ensureBaseUrlReady({bool showError = false}) async {
     if (_baseUrlReady) return true;
     await _initBaseUrl();
+    if (!_baseUrlReady && showError) {
+      _toast(
+        'Server not reachable. Set the correct server URL.',
+        isError: true,
+      );
+    }
     return _baseUrlReady;
+  }
+
+  Future<void> _saveBaseUrl(String input) async {
+    final normalized = _normalizedBaseUrl(input);
+    if (normalized.isEmpty) {
+      _toast('Server URL is required', isError: true);
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('base_url', normalized);
+    setState(() {
+      _baseUrl = normalized;
+      _baseUrlReady = false;
+    });
+    await _initBaseUrl();
+    _toast(
+      _baseUrlReady ? 'Server URL saved' : 'Server not reachable',
+      isError: !_baseUrlReady,
+    );
+  }
+
+  Future<void> _openServerSetup() async {
+    final ctrl = TextEditingController(text: _baseUrl);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Server URL',
+                  style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Use your PC/LAN IP on physical phones (example: http://192.168.1.10:3000).',
+                  style: Theme.of(ctx)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: AppColors.muted),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: ctrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Server URL',
+                    hintText: 'http://192.168.1.10:3000',
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () async {
+                          Navigator.pop(ctx);
+                          await _saveBaseUrl(ctrl.text);
+                        },
+                        child: const Text('Save'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _savePanicNumber() async {
@@ -303,7 +400,7 @@ class _ReportPageState extends State<ReportPage> {
         _mapLng = pos.longitude;
         _showMap = true;
       });
-      await _autoFillLocation(pos.latitude, pos.longitude, overwrite: false);
+      await _autoFillLocation(pos.latitude, pos.longitude, overwrite: true);
       _toast('Location detected');
     } catch (_) {
       _toast('Could not detect location', isError: true);
@@ -337,6 +434,7 @@ class _ReportPageState extends State<ReportPage> {
     double lng, {
     required bool overwrite,
   }) async {
+    var filled = false;
     final canServer = await _ensureBaseUrlReady();
     if (canServer) {
       final url = Uri.parse(
@@ -360,21 +458,100 @@ class _ReportPageState extends State<ReportPage> {
           if (overwrite || _streetCtrl.text.trim().isEmpty) {
             if (street.isNotEmpty) _streetCtrl.text = street;
           }
+          filled = barangay.isNotEmpty || landmark.isNotEmpty || street.isNotEmpty;
         }
       } catch (_) {}
     }
-    final fallback =
-        "Near ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}";
-    final fallbackBarangay = 'Unknown Barangay';
-    final fallbackStreet = 'Unknown Street';
-    if (overwrite || _landmarkCtrl.text.trim().isEmpty) {
-      _landmarkCtrl.text = fallback;
+
+    if (!filled) {
+      final osm = await _reverseGeocodeOsm(lat, lng);
+      if (osm != null) {
+        final barangay = osm.$1;
+        final landmark = osm.$2;
+        final street = osm.$3;
+        if (overwrite || _barangayCtrl.text.trim().isEmpty) {
+          if (barangay.isNotEmpty) _barangayCtrl.text = barangay;
+        }
+        if (overwrite || _landmarkCtrl.text.trim().isEmpty) {
+          if (landmark.isNotEmpty) _landmarkCtrl.text = "Near $landmark";
+        }
+        if (overwrite || _streetCtrl.text.trim().isEmpty) {
+          if (street.isNotEmpty) _streetCtrl.text = street;
+        }
+        filled = barangay.isNotEmpty || landmark.isNotEmpty || street.isNotEmpty;
+      }
     }
-    if (overwrite || _barangayCtrl.text.trim().isEmpty) {
-      _barangayCtrl.text = fallbackBarangay;
+    if (!filled) {
+      final fallback =
+          "Near ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}";
+      final fallbackBarangay = 'Unknown Barangay';
+      final fallbackStreet = 'Unknown Street';
+      if (overwrite || _landmarkCtrl.text.trim().isEmpty) {
+        _landmarkCtrl.text = fallback;
+      }
+      if (overwrite || _barangayCtrl.text.trim().isEmpty) {
+        _barangayCtrl.text = fallbackBarangay;
+      }
+      if (overwrite || _streetCtrl.text.trim().isEmpty) {
+        _streetCtrl.text = fallbackStreet;
+      }
     }
-    if (overwrite || _streetCtrl.text.trim().isEmpty) {
-      _streetCtrl.text = fallbackStreet;
+  }
+
+  Future<(String, String, String)?> _reverseGeocodeOsm(
+    double lat,
+    double lng,
+  ) async {
+    final uri = Uri.https('nominatim.openstreetmap.org', '/reverse', {
+      'format': 'jsonv2',
+      'lat': lat.toString(),
+      'lon': lng.toString(),
+      'zoom': '18',
+      'addressdetails': '1',
+    });
+    try {
+      final res = await http
+          .get(
+            uri,
+            headers: const {
+              'User-Agent': 'smart_verification_system/1.0 (mobile)',
+            },
+          )
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return null;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final addr = (data['address'] as Map<String, dynamic>?) ?? {};
+      final road = (addr['road'] ?? addr['street'] ?? '').toString().trim();
+      final house =
+          (addr['house_number'] ?? addr['house_name'] ?? '').toString().trim();
+      final neighbourhood =
+          (addr['suburb'] ??
+                  addr['neighbourhood'] ??
+                  addr['quarter'] ??
+                  addr['borough'] ??
+                  addr['city_district'] ??
+                  addr['village'] ??
+                  addr['town'] ??
+                  addr['city'] ??
+                  '')
+              .toString()
+              .trim();
+      final landmark =
+          (addr['amenity'] ??
+                  addr['building'] ??
+                  addr['tourism'] ??
+                  addr['shop'] ??
+                  addr['historic'] ??
+                  addr['attraction'] ??
+                  '')
+              .toString()
+              .trim();
+      final street = house.isNotEmpty && road.isNotEmpty
+          ? '$house $road'
+          : (road.isNotEmpty ? road : house);
+      return (neighbourhood, landmark, street);
+    } catch (_) {
+      return null;
     }
   }
 
@@ -412,7 +589,7 @@ class _ReportPageState extends State<ReportPage> {
       _toast('Select emergency type and severity', isError: true);
       return;
     }
-    if (!await _ensureBaseUrlReady()) {
+    if (!await _ensureBaseUrlReady(showError: true)) {
       return;
     }
 
@@ -558,7 +735,7 @@ class _ReportPageState extends State<ReportPage> {
         _mapLng = pos.longitude;
         _showMap = true;
       });
-      await _autoFillLocation(pos.latitude, pos.longitude, overwrite: false);
+      await _autoFillLocation(pos.latitude, pos.longitude, overwrite: true);
       return gps;
     } catch (_) {
       return null;
@@ -571,7 +748,7 @@ class _ReportPageState extends State<ReportPage> {
       _openPanicSetup();
       return;
     }
-    if (!await _ensureBaseUrlReady()) {
+    if (!await _ensureBaseUrlReady(showError: true)) {
       return;
     }
     setState(() => _panicSending = true);
@@ -1355,15 +1532,35 @@ class _ReportPageState extends State<ReportPage> {
       clipBehavior: Clip.antiAlias,
       child: Stack(
         children: [
-          GoogleMap(
-            initialCameraPosition: CameraPosition(target: target, zoom: 17),
-            markers: {
-              Marker(markerId: const MarkerId('detected'), position: target),
-            },
-            myLocationButtonEnabled: false,
-            zoomControlsEnabled: false,
-            mapToolbarEnabled: false,
-            onTap: (_) {},
+          FlutterMap(
+            options: MapOptions(
+              initialCenter: target,
+              initialZoom: 17,
+              interactionOptions: const InteractionOptions(
+                flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+              ),
+            ),
+            children: [
+              TileLayer(
+                urlTemplate:
+                    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.smart_verification_system',
+              ),
+              MarkerLayer(
+                markers: [
+                  Marker(
+                    point: target,
+                    width: 44,
+                    height: 44,
+                    child: const Icon(
+                      Icons.location_on,
+                      color: AppColors.red,
+                      size: 36,
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
           Positioned(
             top: 10,
@@ -1395,6 +1592,24 @@ class _ReportPageState extends State<ReportPage> {
                     child: const Text('Open map'),
                   ),
                 ],
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: 8,
+            right: 10,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xE6FFFFFF),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Text(
+                '© OpenStreetMap contributors',
+                style: Theme.of(
+                  context,
+                ).textTheme.labelSmall?.copyWith(color: AppColors.muted2),
               ),
             ),
           ),
@@ -1447,6 +1662,24 @@ class _ReportPageState extends State<ReportPage> {
           style: Theme.of(
             context,
           ).textTheme.bodySmall?.copyWith(color: AppColors.text2, height: 1.5),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Server: $_baseUrl',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppColors.muted,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
+            TextButton(
+              onPressed: _openServerSetup,
+              child: const Text('Edit'),
+            ),
+          ],
         ),
       ],
     );
