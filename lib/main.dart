@@ -317,7 +317,8 @@ class _ReportPageState extends State<ReportPage> {
     if (!serviceEnabled) {
       _toast('Location services are disabled', isError: true);
       return false;
-    }
+    } 
+    
 
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
