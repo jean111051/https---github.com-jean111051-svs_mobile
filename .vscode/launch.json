@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Flutter (SVS)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": [
+        "--dart-define=SUPABASE_URL=https://hnvnswlmwcljidlsbjbm.supabase.co",
+        "--dart-define=SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhudm5zd2xtd2NsamlkbHNiamJtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM3MTQ4MjcsImV4cCI6MjA4OTI5MDgyN30.lLG1AQl84FH6BrXrxj7s4IjziyKAZwXGSbR9ra2MBEg",
+        "--dart-define=SUPABASE_BUCKET=svs_photo"
+      ]
+    }
+  ]
+}
