@@ -35,6 +35,7 @@ const reportSchema = new mongoose.Schema(
     description: String,
     gps: String,
     photo: String,
+    photos: [String],
   },
   { timestamps: true }
 );
@@ -53,6 +54,34 @@ const panicSchema = new mongoose.Schema(
 const Report = mongoose.model('Report', reportSchema);
 const Panic = mongoose.model('Panic', panicSchema);
 
+function normalizePhotoFields(body) {
+  if (!body || typeof body !== 'object') return body;
+  const toStr = (v) => (typeof v === 'string' ? v.trim() : '');
+  const isUrl = (v) => /^https?:\/\//i.test(v);
+  const isData = (v) => /^data:image\/[a-z0-9.+-]+;base64,/i.test(v);
+  const valid = (v) => isUrl(v) || isData(v);
+
+  const photo = toStr(body.photo);
+  const photos = Array.isArray(body.photos)
+    ? body.photos.map(toStr).filter(valid)
+    : [];
+
+  const normalized = { ...body };
+  if (photo && valid(photo)) {
+    normalized.photo = photo;
+  } else if (photos.length > 0) {
+    normalized.photo = photos[0];
+  } else {
+    delete normalized.photo;
+  }
+  if (photos.length > 0) {
+    normalized.photos = photos;
+  } else {
+    delete normalized.photos;
+  }
+  return normalized;
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
@@ -65,10 +94,11 @@ app.get('/report', (_req, res) => {
 app.post('/api/report', async (req, res) => {
   try {
     await ensureDb();
-    const body = req.body || {};
+    let body = req.body || {};
     if (!body.name || !body.contact || !body.emergencyType || !body.severity || !body.gps) {
       return res.status(400).json({ success: false, error: 'Missing required fields' });
     }
+    body = normalizePhotoFields(body);
     const report = await Report.create(body);
     res.json({ success: true, id: report._id.toString() });
   } catch (err) {
