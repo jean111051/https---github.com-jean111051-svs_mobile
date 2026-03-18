@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -32,9 +31,9 @@ class SvsApp extends StatelessWidget {
       scaffoldBackgroundColor: AppColors.bg,
       textTheme: GoogleFonts.outfitTextTheme(),
       bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-        backgroundColor: AppColors.bgSoft,
-        selectedItemColor: AppColors.amber,
-        unselectedItemColor: Color(0xFF93A6C7),
+        backgroundColor: AppColors.navBg,
+        selectedItemColor: AppColors.navSelected,
+        unselectedItemColor: AppColors.navUnselected,
         showUnselectedLabels: true,
         type: BottomNavigationBarType.fixed,
         elevation: 12,
@@ -72,6 +71,9 @@ class AppColors {
   static const greenLight = Color(0xFFE3ECFF);
   static const greenBorder = Color(0xFFBFD4FF);
   static const blue = Color(0xFF1F4BB8);
+  static const navBg = Color(0xFFFFFFFF);
+  static const navSelected = Color(0xFF1F4BB8);
+  static const navUnselected = Color(0xFF7E8FA8);
   static const bg = Color(0xFFFFFFFF);
   static const bgSoft = Color(0xFF1F3560);
   static const surface = Color(0xFFFFFFFF);
@@ -275,25 +277,6 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       );
     }
     return _baseUrlReady;
-  }
-
-  Future<void> _saveBaseUrl(String input) async {
-    final normalized = _normalizedBaseUrl(input);
-    if (normalized.isEmpty) {
-      _toast('Server URL is required', isError: true);
-      return;
-    }
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('base_url', normalized);
-    setState(() {
-      _baseUrl = normalized;
-      _baseUrlReady = false;
-    });
-    await _initBaseUrl();
-    _toast(
-      _baseUrlReady ? 'Server URL saved' : 'Server not reachable',
-      isError: !_baseUrlReady,
-    );
   }
 
   Future<void> _savePanicNumber() async {
@@ -2372,9 +2355,9 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       child: Container(
         padding: const EdgeInsets.only(top: 6),
         decoration: BoxDecoration(
-          color: AppColors.bgSoft,
+          color: AppColors.navBg,
           border: Border(
-            top: BorderSide(color: AppColors.border.withValues(alpha: 0.25)),
+            top: BorderSide(color: AppColors.border.withValues(alpha: 0.8)),
           ),
         ),
         child: BottomNavigationBar(
@@ -2409,43 +2392,74 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
 
   Widget _buildHeader() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.border),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.border),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x120F172A),
+              blurRadius: 14,
+              offset: Offset(0, 6),
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Image.asset('assets/svs-logo.png', fit: BoxFit.cover),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
             children: [
-              Text(
-                'SVS',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+              Container(
+                width: 52,
+                height: 52,
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(
+                  color: AppColors.bg,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.asset('assets/svs-logo.png', fit: BoxFit.cover),
+                ),
               ),
-              Text(
-                'Smart Verification System',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: AppColors.muted,
-                  letterSpacing: 1.2,
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'SVS',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: AppColors.text,
+                        fontWeight: FontWeight.w800,
+                        height: 1,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Smart Verification System',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.text2,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Verified emergency reporting and SOS.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppColors.muted,
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-          const Spacer(),
-        ],
+        ),
       ),
     );
   }
@@ -3381,81 +3395,106 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   Widget _buildFooter({required bool showContact}) {
     final year = DateTime.now().year;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 36,
-                height: 36,
+                width: 24,
+                height: 24,
                 decoration: BoxDecoration(
                   color: AppColors.amberLight,
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(7),
                   border: Border.all(color: AppColors.amberBorder),
                 ),
                 child: const Icon(
                   Icons.local_fire_department,
                   color: AppColors.amberDeep,
-                  size: 18,
+                  size: 13,
                 ),
               ),
-              const SizedBox(width: 10),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Smart Verification System',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
+              const SizedBox(width: 7),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Smart Verification System',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.text,
+                        height: 1.1,
+                      ),
                     ),
-                  ),
-                  Text(
-                    'Emergency Reporting',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: AppColors.muted2),
-                  ),
-                ],
+                    Text(
+                      'Emergency Reporting',
+                      style: Theme.of(
+                        context,
+                      ).textTheme.labelSmall?.copyWith(
+                        color: AppColors.muted2,
+                        height: 1.15,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 6),
           Text(
             'Fast and reliable citizen incident reporting with real-time dispatcher visibility and location-aware alerts.',
             style: Theme.of(
               context,
-            ).textTheme.bodySmall?.copyWith(color: AppColors.muted),
+            ).textTheme.labelLarge?.copyWith(
+              color: AppColors.muted,
+              height: 1.25,
+            ),
           ),
           if (showContact) ...[
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             Text(
               'Contact Us',
-              style: Theme.of(
-                context,
-              ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: AppColors.text,
+              ),
             ),
-            const SizedBox(height: 6),
-            Text('Hotline: 911', style: Theme.of(context).textTheme.bodySmall),
-            Text(
-              'Office: +63 917 000 0000',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            Text(
-              'Email: support@svs.local',
-              style: Theme.of(context).textTheme.bodySmall,
+            const SizedBox(height: 3),
+            Wrap(
+              spacing: 8,
+              runSpacing: 2,
+              children: [
+                _footerMeta('Hotline: 911'),
+                _footerMeta('Office: +63 917 000 0000'),
+                _footerMeta('Email: support@svs.local'),
+              ],
             ),
           ],
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
           Text(
             'Copyright $year SVS. All rights reserved.',
             style: Theme.of(
               context,
-            ).textTheme.labelSmall?.copyWith(color: AppColors.muted2),
+            ).textTheme.labelSmall?.copyWith(
+              color: AppColors.muted2,
+              fontSize: 10,
+            ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _footerMeta(String text) {
+    return Text(
+      text,
+      style: Theme.of(
+        context,
+      ).textTheme.labelSmall?.copyWith(color: AppColors.text2, height: 1.2),
     );
   }
 
