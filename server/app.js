@@ -51,8 +51,24 @@ const panicSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const alertSchema = new mongoose.Schema(
+  {
+    title: String,
+    message: String,
+    disasterType: String,
+    severity: String,
+    active: {
+      type: Boolean,
+      default: true,
+    },
+    sentBy: String,
+  },
+  { timestamps: true }
+);
+
 const Report = mongoose.model('Report', reportSchema);
 const Panic = mongoose.model('Panic', panicSchema);
+const Alert = mongoose.model('Alert', alertSchema);
 
 function normalizePhotoFields(body) {
   if (!body || typeof body !== 'object') return body;
@@ -118,6 +134,154 @@ app.post('/api/panic', async (req, res) => {
     res.json({ success: true, id: panic._id.toString() });
   } catch (err) {
     console.error('Panic error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+app.get('/api/alerts/latest', async (_req, res) => {
+  try {
+    await ensureDb();
+    const alert = await Alert.findOne({ active: true }).sort({ createdAt: -1 });
+    res.json({
+      success: true,
+      alert: alert
+        ? {
+            id: alert._id.toString(),
+            title: alert.title || 'Emergency alert',
+            message: alert.message || '',
+            disasterType: alert.disasterType || 'General',
+            severity: alert.severity || 'high',
+            active: alert.active !== false,
+            sentBy: alert.sentBy || '',
+            createdAt: alert.createdAt,
+            updatedAt: alert.updatedAt,
+          }
+        : null,
+    });
+  } catch (err) {
+    console.error('Latest alert error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+app.get('/api/alerts', async (req, res) => {
+  try {
+    await ensureDb();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const alerts = await Alert.find().sort({ createdAt: -1 }).limit(limit);
+    res.json({
+      success: true,
+      alerts: alerts.map((alert) => ({
+        id: alert._id.toString(),
+        title: alert.title || 'Emergency alert',
+        message: alert.message || '',
+        disasterType: alert.disasterType || 'General',
+        severity: alert.severity || 'high',
+        active: alert.active !== false,
+        sentBy: alert.sentBy || '',
+        createdAt: alert.createdAt,
+        updatedAt: alert.updatedAt,
+      })),
+    });
+  } catch (err) {
+    console.error('List alerts error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+app.post('/api/alerts', async (req, res) => {
+  try {
+    await ensureDb();
+    const body = req.body || {};
+    const title = (body.title || '').toString().trim();
+    const message = (body.message || '').toString().trim();
+    const disasterType = (body.disasterType || body.type || 'General')
+      .toString()
+      .trim();
+    const severity = (body.severity || 'high').toString().trim().toLowerCase();
+    const sentBy = (body.sentBy || 'admin').toString().trim();
+    const active = body.active !== false;
+
+    if (!title && !message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Title or message is required',
+      });
+    }
+
+    const alert = await Alert.create({
+      title: title || `${disasterType} alert`,
+      message: message || title,
+      disasterType: disasterType || 'General',
+      severity: severity || 'high',
+      active,
+      sentBy,
+    });
+
+    res.json({
+      success: true,
+      id: alert._id.toString(),
+      alert: {
+        id: alert._id.toString(),
+        title: alert.title,
+        message: alert.message,
+        disasterType: alert.disasterType,
+        severity: alert.severity,
+        active: alert.active !== false,
+        sentBy: alert.sentBy || '',
+        createdAt: alert.createdAt,
+        updatedAt: alert.updatedAt,
+      },
+    });
+  } catch (err) {
+    console.error('Create alert error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+app.patch('/api/alerts/:id', async (req, res) => {
+  try {
+    await ensureDb();
+    const body = req.body || {};
+    const update = {};
+    if ('title' in body) update.title = (body.title || '').toString().trim();
+    if ('message' in body) {
+      update.message = (body.message || '').toString().trim();
+    }
+    if ('disasterType' in body || 'type' in body) {
+      update.disasterType = (body.disasterType || body.type || 'General')
+        .toString()
+        .trim();
+    }
+    if ('severity' in body) {
+      update.severity = (body.severity || 'high').toString().trim().toLowerCase();
+    }
+    if ('active' in body) update.active = body.active !== false;
+    if ('sentBy' in body) update.sentBy = (body.sentBy || '').toString().trim();
+
+    const alert = await Alert.findByIdAndUpdate(req.params.id, update, {
+      new: true,
+    });
+    if (!alert) {
+      return res.status(404).json({ success: false, error: 'Alert not found' });
+    }
+
+    res.json({
+      success: true,
+      alert: {
+        id: alert._id.toString(),
+        title: alert.title || 'Emergency alert',
+        message: alert.message || '',
+        disasterType: alert.disasterType || 'General',
+        severity: alert.severity || 'high',
+        active: alert.active !== false,
+        sentBy: alert.sentBy || '',
+        createdAt: alert.createdAt,
+        updatedAt: alert.updatedAt,
+      },
+    });
+  } catch (err) {
+    console.error('Update alert error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
   }
 });
