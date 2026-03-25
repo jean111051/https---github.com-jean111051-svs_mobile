@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -14,9 +16,36 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
+final FlutterLocalNotificationsPlugin _localNotifications =
+    FlutterLocalNotificationsPlugin();
+const AndroidNotificationChannel _alertNotificationChannel =
+    AndroidNotificationChannel(
+      'svs_alerts',
+      'SVS Alerts',
+      description: 'Emergency alerts sent by the SVS admin dashboard.',
+      importance: Importance.max,
+      playSound: true,
+      enableVibration: true,
+    );
+bool _localNotificationsReady = false;
+
+Future<void> _bootstrapNotifications() async {
+  const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const initSettings = InitializationSettings(android: androidInit);
+  await _localNotifications.initialize(settings: initSettings);
+  final androidPlugin = _localNotifications
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >();
+  await androidPlugin?.createNotificationChannel(_alertNotificationChannel);
+  await androidPlugin?.requestNotificationsPermission();
+  _localNotificationsReady = true;
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: '.env');
+  await _bootstrapNotifications();
   runApp(const SvsApp());
 }
 
@@ -74,15 +103,51 @@ class AppColors {
   static const navBg = Color(0xFFFFFFFF);
   static const navSelected = Color(0xFF1F4BB8);
   static const navUnselected = Color(0xFF7E8FA8);
-  static const bg = Color(0xFFFFFFFF);
+  static const bg = Color(0xFFF5F7FF);
   static const bgSoft = Color(0xFF1F3560);
-  static const surface = Color(0xFFFFFFFF);
+  static const surface = Color(0xFFF4F8FF);
   static const border = Color(0xFFD9E3F2);
   static const borderMid = Color(0xFFBFD0EA);
   static const text = Color(0xFF0E1A2B);
   static const text2 = Color(0xFF1F3560);
   static const muted = Color(0xFF5D6D86);
   static const muted2 = Color(0xFF7E8FA8);
+}
+
+class AdminAlert {
+  const AdminAlert({
+    required this.id,
+    required this.title,
+    required this.message,
+    required this.disasterType,
+    required this.severity,
+    required this.active,
+    this.createdAt,
+  });
+
+  final String id;
+  final String title;
+  final String message;
+  final String disasterType;
+  final String severity;
+  final bool active;
+  final DateTime? createdAt;
+
+  factory AdminAlert.fromJson(Map<String, dynamic> json) {
+    return AdminAlert(
+      id: (json['id'] ?? json['source_id'] ?? '').toString(),
+      title: (json['title'] ?? 'Emergency alert').toString().trim(),
+      message: (json['message'] ?? '').toString().trim(),
+      disasterType: (json['disasterType'] ?? json['disaster_type'] ?? 'General')
+          .toString()
+          .trim(),
+      severity: (json['severity'] ?? 'high').toString().trim().toLowerCase(),
+      active: (json['active'] ?? json['is_active']) != false,
+      createdAt: DateTime.tryParse(
+        (json['createdAt'] ?? json['created_at'] ?? '').toString(),
+      ),
+    );
+  }
 }
 
 class ReportPage extends StatefulWidget {
@@ -93,6 +158,9 @@ class ReportPage extends StatefulWidget {
 }
 
 class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
+  static const bool _showReporterDebugPanels = false;
+
+  final MapController _mapController = MapController();
   final _nameCtrl = TextEditingController();
   final _contactCtrl = TextEditingController();
   final _barangayCtrl = TextEditingController();
@@ -100,6 +168,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   final _streetCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
   final _panicCtrl = TextEditingController();
+  final _faqFeedbackCtrl = TextEditingController();
 
   final _formKey = GlobalKey<FormState>();
 
@@ -120,6 +189,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   double? _mapLat;
   double? _mapLng;
   bool _showMap = false;
+  double _mapZoom = 16;
+  bool _mapSatellite = false;
 
   final List<Uint8List> _photoPreviewBytes = [];
   final List<XFile> _photoFiles = [];
@@ -127,33 +198,53 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   bool _submitting = false;
   bool _panicSending = false;
   bool _panicDialogOpen = false;
-  int _navIndex = 1;
+  bool _checkingAlerts = false;
+  bool _alertDialogOpen = false;
+  int _navIndex = 2;
 
   String? _panicNumber;
   String _baseUrl = 'https://svsmdrrmo.vercel.app';
   static const String _queuedReportsKey = 'queued_reports';
+  static const String _lastSeenAlertIdKey = 'last_seen_alert_id';
+  static const Duration _alertPollInterval = Duration(seconds: 5);
 
   static const String _baseUrlEnv = String.fromEnvironment(
     'BASE_URL',
     defaultValue: '',
   );
+  final String _baseUrlDotenv = dotenv.env['BASE_URL'] ?? '';
   bool _baseUrlReady = false;
 
   final String _supabaseUrlEnv = dotenv.env['SUPABASE_URL'] ?? '';
   final String _supabaseAnonKeyEnv = dotenv.env['SUPABASE_ANON_KEY'] ?? '';
   final String _supabaseBucketEnv = dotenv.env['SUPABASE_BUCKET'] ?? '';
+  final String _supabaseAlertsTableEnv =
+      dotenv.env['SUPABASE_ALERTS_TABLE'] ?? 'admin_alerts';
+  Timer? _alertPollingTimer;
+  String? _lastSeenAlertId;
+  AdminAlert? _activeAlert;
+  String _alertDebugStatus = 'idle';
+  String _alertDebugSource = '-';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadPrefs();
-    _initBaseUrl().then((_) => _trySendQueuedReports());
+    _initializeApp();
+  }
+
+  Future<void> _initializeApp() async {
+    await _loadPrefs();
+    await _initBaseUrl();
+    _trySendQueuedReports();
+    await _primeAdminAlerts();
+    _startAlertPolling();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _alertPollingTimer?.cancel();
     _nameCtrl.dispose();
     _contactCtrl.dispose();
     _barangayCtrl.dispose();
@@ -161,6 +252,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     _streetCtrl.dispose();
     _descCtrl.dispose();
     _panicCtrl.dispose();
+    _faqFeedbackCtrl.dispose();
     super.dispose();
   }
 
@@ -168,6 +260,12 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _trySendQueuedReports();
+      unawaited(_primeAdminAlerts());
+      _startAlertPolling();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      _alertPollingTimer?.cancel();
     }
   }
 
@@ -175,9 +273,11 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     final panicNum = prefs.getString('panic_number');
     final baseUrl = prefs.getString('base_url');
+    final lastSeenAlertId = prefs.getString(_lastSeenAlertIdKey);
     setState(() {
       _panicNumber = panicNum;
       _panicCtrl.text = _formatPhMobile(_panicNumber);
+      _lastSeenAlertId = lastSeenAlertId;
       if (baseUrl != null && baseUrl.trim().isNotEmpty) {
         _baseUrl = baseUrl.trim();
       }
@@ -223,17 +323,20 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
 
   List<String> _candidateBaseUrls() {
     final candidates = <String>[];
+    if (_baseUrlDotenv.trim().isNotEmpty) {
+      candidates.add(_normalizedBaseUrl(_baseUrlDotenv));
+    }
     if (_baseUrlEnv.trim().isNotEmpty) {
       candidates.add(_normalizedBaseUrl(_baseUrlEnv));
-    }
-    if (_baseUrl.trim().isNotEmpty) {
-      candidates.add(_normalizedBaseUrl(_baseUrl));
     }
     if (!kIsWeb && Platform.isAndroid) {
       candidates.add('http://10.0.2.2:3000');
     }
     candidates.add('http://localhost:3000');
     candidates.add('http://127.0.0.1:3000');
+    if (_baseUrl.trim().isNotEmpty) {
+      candidates.add(_normalizedBaseUrl(_baseUrl));
+    }
     return candidates.toSet().toList();
   }
 
@@ -277,6 +380,36 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       );
     }
     return _baseUrlReady;
+  }
+
+  Future<void> _showAdminAlertNotification(AdminAlert alert) async {
+    if (!_localNotificationsReady) return;
+    final body = alert.message.isEmpty
+        ? '${alert.disasterType} - ${alert.severity.toUpperCase()}'
+        : alert.message;
+    await _localNotifications.show(
+      id: alert.id.hashCode,
+      title: alert.title,
+      body: body,
+      notificationDetails: NotificationDetails(
+        android: AndroidNotificationDetails(
+          _alertNotificationChannel.id,
+          _alertNotificationChannel.name,
+          channelDescription: _alertNotificationChannel.description,
+          importance: Importance.max,
+          priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
+        ),
+      ),
+      payload: jsonEncode({
+        'id': alert.id,
+        'title': alert.title,
+        'message': alert.message,
+        'disasterType': alert.disasterType,
+        'severity': alert.severity,
+      }),
+    );
   }
 
   Future<void> _savePanicNumber() async {
@@ -1339,6 +1472,468 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     );
   }
 
+  void _startAlertPolling() {
+    _alertPollingTimer?.cancel();
+    unawaited(_checkForAdminAlerts());
+    _alertPollingTimer = Timer.periodic(_alertPollInterval, (_) {
+      _checkForAdminAlerts();
+    });
+  }
+
+  Future<void> _saveLastSeenAlertId(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_lastSeenAlertIdKey, id);
+    _lastSeenAlertId = id;
+  }
+
+  Future<void> _primeAdminAlerts() async {
+    await _checkForAdminAlerts(notifyOnNew: false);
+  }
+
+  Future<void> _consumeAdminAlert(
+    AdminAlert alert, {
+    required bool notifyOnNew,
+  }) async {
+    if (alert.id.isEmpty || !alert.active) {
+      if (mounted && _activeAlert != null) {
+        setState(() => _activeAlert = null);
+      }
+      return;
+    }
+
+    final isNewAlert = alert.id != _lastSeenAlertId;
+    if (mounted) {
+      setState(() => _activeAlert = alert);
+    }
+
+    if (isNewAlert) {
+      await _saveLastSeenAlertId(alert.id);
+      if (notifyOnNew) {
+        await _showAdminAlertNotification(alert);
+        await _presentAdminAlert(alert);
+      }
+    }
+  }
+
+  Future<void> _checkForAdminAlerts({bool notifyOnNew = true}) async {
+    if (_checkingAlerts) return;
+
+    _checkingAlerts = true;
+    try {
+      AdminAlert? alert;
+      var source = 'supabase';
+      alert = await _fetchLatestAlertFromSupabase();
+      if (alert == null && await _ensureBaseUrlReady(showError: false)) {
+        source = 'server';
+        alert = await _fetchLatestAlertFromServer();
+      }
+
+      if (alert == null) {
+        if (mounted && _activeAlert != null) {
+          setState(() => _activeAlert = null);
+        }
+        if (mounted) {
+          setState(() {
+            _alertDebugStatus = 'no active alert found';
+            _alertDebugSource = source;
+          });
+        }
+        return;
+      }
+      if (mounted) {
+        final resolvedAlert = alert;
+        setState(() {
+          _alertDebugStatus =
+              'alert ${resolvedAlert.id} ${notifyOnNew ? "checked" : "primed"}';
+          _alertDebugSource = source;
+        });
+      }
+      await _consumeAdminAlert(alert, notifyOnNew: notifyOnNew);
+    } catch (e) {
+      debugPrint('[alerts] poll failed: $e');
+      if (mounted) {
+        setState(() {
+          _alertDebugStatus = 'error: ${_shortError(e)}';
+        });
+      }
+    } finally {
+      _checkingAlerts = false;
+    }
+  }
+
+  Future<AdminAlert?> _fetchLatestAlertFromServer() async {
+    final url = Uri.parse('${_effectiveBaseUrl()}/api/alerts/latest');
+    final res = await http
+        .get(url, headers: _apiHeaders())
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      debugPrint('[alerts] server status=${res.statusCode} body=${res.body}');
+      return null;
+    }
+
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    if (data['success'] != true) return null;
+
+    final alertJson = data['alert'];
+    if (alertJson is! Map) return null;
+    return AdminAlert.fromJson(alertJson.cast<String, dynamic>());
+  }
+
+  Future<AdminAlert?> _fetchLatestAlertFromSupabase() async {
+    if (_supabaseUrlEnv.trim().isEmpty || _supabaseAnonKeyEnv.trim().isEmpty) {
+      return null;
+    }
+    final table = _supabaseAlertsTableEnv.trim().isEmpty
+        ? 'admin_alerts'
+        : _supabaseAlertsTableEnv.trim();
+    final baseUrl = _normalizedSupabaseUrl(_supabaseUrlEnv);
+    final url = Uri.parse(
+      '$baseUrl/rest/v1/${Uri.encodeComponent(table)}'
+      '?select=source_id,title,message,disaster_type,severity,active,sent_by,created_at'
+      '&active=eq.true'
+      '&order=created_at.desc'
+      '&limit=1',
+    );
+    final res = await http
+        .get(
+          url,
+          headers: {
+            'Authorization': 'Bearer $_supabaseAnonKeyEnv',
+            'apikey': _supabaseAnonKeyEnv,
+          },
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      debugPrint('[alerts] supabase status=${res.statusCode} body=${res.body}');
+      return null;
+    }
+    final data = jsonDecode(res.body);
+    if (data is! List || data.isEmpty || data.first is! Map) return null;
+    return AdminAlert.fromJson((data.first as Map).cast<String, dynamic>());
+  }
+
+  Future<void> _triggerTestAlert() async {
+    const alert = AdminAlert(
+      id: 'debug-local-test',
+      title: 'Debug Alert Test',
+      message: 'Local notifications are working on this device.',
+      disasterType: 'System',
+      severity: 'high',
+      active: true,
+    );
+    await _showAdminAlertNotification(alert);
+    if (mounted) {
+      setState(() {
+        _alertDebugStatus = 'local notification test fired';
+        _alertDebugSource = 'device';
+      });
+      _toast('Local notification test fired');
+    }
+  }
+
+  Widget _buildAlertDebugPanel() {
+    if (!kDebugMode || !_showReporterDebugPanels) {
+      return const SizedBox.shrink();
+    }
+    final ok = !_alertDebugStatus.startsWith('error');
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: ok ? AppColors.greenLight : AppColors.redLight,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: ok ? AppColors.greenBorder : AppColors.redBorder,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Alert debug',
+            style: Theme.of(
+              context,
+            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Status: $_alertDebugStatus',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: AppColors.text2),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Source: $_alertDebugSource',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: AppColors.text2),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () {
+                    unawaited(_checkForAdminAlerts());
+                    _toast('Checking alerts now');
+                  },
+                  child: const Text('Check Alerts'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _triggerTestAlert,
+                  child: const Text('Test Notification'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _presentAdminAlert(AdminAlert alert) async {
+    if (!mounted || _alertDialogOpen) return;
+    _alertDialogOpen = true;
+    unawaited(_triggerAlertFeedback());
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          final severityColor = _alertSeverityColor(alert.severity);
+          return Dialog(
+            insetPadding: const EdgeInsets.symmetric(
+              horizontal: 20,
+              vertical: 24,
+            ),
+            backgroundColor: Colors.transparent,
+            child: Container(
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFBFB),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: AppColors.redBorder, width: 1.4),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x330F172A),
+                    blurRadius: 28,
+                    offset: Offset(0, 14),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 52,
+                        height: 52,
+                        decoration: BoxDecoration(
+                          color: AppColors.redLight,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: AppColors.redBorder),
+                        ),
+                        child: const Icon(
+                          Icons.warning_amber_rounded,
+                          color: AppColors.red,
+                          size: 28,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              alert.title,
+                              style: Theme.of(ctx).textTheme.titleMedium
+                                  ?.copyWith(
+                                    color: AppColors.text,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${alert.disasterType} - ${alert.severity.toUpperCase()}',
+                              style: Theme.of(ctx).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: severityColor,
+                                    letterSpacing: 1.1,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    alert.message,
+                    style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
+                      color: AppColors.text2,
+                      height: 1.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.orangeLight,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppColors.orangeBorder),
+                    ),
+                    child: Text(
+                      'Prepare now and follow official MDRRMO or LGU instructions.',
+                      style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                        color: AppColors.text2,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () => Navigator.of(ctx).pop(),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.red,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      child: const Text('I Understand'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    } finally {
+      _alertDialogOpen = false;
+    }
+  }
+
+  Future<void> _triggerAlertFeedback() async {
+    try {
+      await SystemSound.play(SystemSoundType.alert);
+    } catch (_) {}
+    for (var i = 0; i < 3; i++) {
+      try {
+        await HapticFeedback.heavyImpact();
+      } catch (_) {}
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+    }
+  }
+
+  Color _alertSeverityColor(String severity) {
+    switch (severity) {
+      case 'critical':
+        return AppColors.red;
+      case 'medium':
+        return AppColors.amberDeep;
+      case 'low':
+        return AppColors.blue;
+      case 'high':
+      default:
+        return AppColors.orange;
+    }
+  }
+
+  Widget _buildAdminAlertBanner() {
+    final alert = _activeAlert;
+    if (alert == null || !alert.active) return const SizedBox.shrink();
+
+    final severityColor = _alertSeverityColor(alert.severity);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: InkWell(
+        onTap: () => _presentAdminAlert(alert),
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFFFF4E8), Color(0xFFFFECEC)],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: AppColors.orangeBorder),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x1F0F172A),
+                blurRadius: 12,
+                offset: Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: AppColors.redLight,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.redBorder),
+                ),
+                child: const Icon(
+                  Icons.campaign_rounded,
+                  color: AppColors.red,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Active Disaster Alert',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: severityColor,
+                        letterSpacing: 1.2,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      alert.title,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.text,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      alert.message,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppColors.text2,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Map<String, String> _apiHeaders() {
     return const {'Content-Type': 'application/json', 'X-SVS-Client': 'mobile'};
   }
@@ -1441,20 +2036,62 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topRight,
-            end: Alignment.bottomLeft,
-            colors: [
-              Color(0xFFEAF2FF),
-              Color(0xFFFFF7E6),
-              Color(0xFFFFEEF0),
-              AppColors.bg,
-            ],
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Color(0xFFF2F6FF),
+                    Color(0xFFFFF7EF),
+                    Color(0xFFFFFFFF),
+                  ],
+                  stops: [0.0, 0.82, 1.0],
+                ),
+              ),
+            ),
           ),
-        ),
-        child: SafeArea(child: CustomScrollView(slivers: _buildPageSlivers())),
+          Positioned(
+            top: -150,
+            right: -170,
+            child: IgnorePointer(
+              child: Container(
+                width: 520,
+                height: 360,
+                decoration: const BoxDecoration(
+                  gradient: RadialGradient(
+                    center: Alignment.center,
+                    radius: 0.95,
+                    colors: [Color(0x293B82F6), Color(0x003B82F6)],
+                    stops: [0.0, 1.0],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: -120,
+            bottom: -110,
+            child: IgnorePointer(
+              child: Container(
+                width: 420,
+                height: 280,
+                decoration: const BoxDecoration(
+                  gradient: RadialGradient(
+                    center: Alignment.center,
+                    radius: 0.95,
+                    colors: [Color(0x1FEF4444), Color(0x00EF4444)],
+                    stops: [0.0, 1.0],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          SafeArea(child: CustomScrollView(slivers: _buildPageSlivers())),
+        ],
       ),
       bottomNavigationBar: _buildBottomNav(),
     );
@@ -1465,33 +2102,38 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       case 0:
         return [
           SliverToBoxAdapter(child: _buildHeader()),
+          SliverToBoxAdapter(child: _buildAdminAlertBanner()),
           SliverToBoxAdapter(child: _buildAboutPage()),
-          SliverToBoxAdapter(child: _buildFooter(showContact: true)),
+          SliverToBoxAdapter(child: _buildFooter()),
         ];
       case 1:
         return [
           SliverToBoxAdapter(child: _buildHeader()),
+          SliverToBoxAdapter(child: _buildAdminAlertBanner()),
           SliverToBoxAdapter(child: _buildPanicStrip()),
           SliverToBoxAdapter(child: _buildSosSteps()),
-          SliverToBoxAdapter(child: _buildFooter(showContact: false)),
+          SliverToBoxAdapter(child: _buildFooter()),
         ];
       case 2:
         return [
           SliverToBoxAdapter(child: _buildHeader()),
+          SliverToBoxAdapter(child: _buildAdminAlertBanner()),
           SliverToBoxAdapter(child: _buildForm()),
-          SliverToBoxAdapter(child: _buildFooter(showContact: false)),
+          SliverToBoxAdapter(child: _buildFooter()),
         ];
       case 3:
         return [
           SliverToBoxAdapter(child: _buildHeader()),
+          SliverToBoxAdapter(child: _buildAdminAlertBanner()),
           SliverToBoxAdapter(child: _buildFaqPage()),
-          SliverToBoxAdapter(child: _buildFooter(showContact: false)),
+          SliverToBoxAdapter(child: _buildFooter()),
         ];
       default:
         return [
           SliverToBoxAdapter(child: _buildHeader()),
+          SliverToBoxAdapter(child: _buildAdminAlertBanner()),
           SliverToBoxAdapter(child: _buildForm()),
-          SliverToBoxAdapter(child: _buildFooter(showContact: true)),
+          SliverToBoxAdapter(child: _buildFooter()),
         ];
     }
   }
@@ -1505,8 +2147,12 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           _buildAboutHero(),
           const SizedBox(height: 16),
           _buildAboutHighlights(),
-          const SizedBox(height: 18),
-          _buildDisasterGuide(),
+          const SizedBox(height: 20),
+          _buildEmergencyGuideSection(),
+          const SizedBox(height: 20),
+          _buildHotlineSection(),
+          const SizedBox(height: 20),
+          _buildAboutFooterCallout(),
         ],
       ),
     );
@@ -1514,16 +2160,20 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
 
   Widget _buildAboutHero() {
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppColors.border),
+        gradient: const LinearGradient(
+          colors: [Color(0xD1FFFFFF), Color(0xE6EEF6FF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFD8E5FF), width: 1.4),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x140F172A),
-            blurRadius: 16,
-            offset: Offset(0, 10),
+            color: Color(0x190F172A),
+            blurRadius: 24,
+            offset: Offset(0, 14),
           ),
         ],
       ),
@@ -1535,54 +2185,86 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
+                  horizontal: 14,
+                  vertical: 8,
                 ),
                 decoration: BoxDecoration(
-                  color: AppColors.greenLight,
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: AppColors.greenBorder),
+                  border: Border.all(color: AppColors.borderMid),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x140F172A),
+                      blurRadius: 12,
+                      offset: Offset(0, 6),
+                    ),
+                  ],
                 ),
                 child: Text(
                   'The problem -> The solution',
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: AppColors.blue,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    color: AppColors.blue,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'From clogged hotlines to clear, verified emergency reports.',
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  height: 1.08,
+                  color: const Color(0xFF0C1A36),
+                  letterSpacing: -1.1,
                 ),
               ),
               const SizedBox(height: 12),
-              Text(
-                'From clogged hotlines to clear,\nverified emergency reports.',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
-                      height: 1.1,
-                    ),
-              ),
-              const SizedBox(height: 10),
               Text(
                 'Emergency lines used to drown in prank calls, vague landmarks, and '
                 'dropped signals. SVS was built with responders to verify callers, '
                 'pin locations automatically, and keep genuine emergencies moving fast.',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppColors.muted,
-                      height: 1.5,
-                    ),
+                  color: const Color(0xFF1F2937),
+                  height: 1.75,
+                  fontSize: 15,
+                ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 18),
               Wrap(
-                spacing: 10,
-                runSpacing: 10,
+                spacing: 12,
+                runSpacing: 12,
                 children: [
                   FilledButton(
                     onPressed: () => setState(() => _navIndex = 2),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.red,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 16,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
                     child: const Text('File an Emergency Report'),
                   ),
                   OutlinedButton(
                     onPressed: () => setState(() => _navIndex = 1),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: AppColors.blue,
-                      side: const BorderSide(color: AppColors.blue, width: 1.4),
+                      side: const BorderSide(
+                        color: AppColors.borderMid,
+                        width: 1.5,
+                      ),
+                      backgroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 16,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                     child: const Text('Quick SOS options'),
                   ),
@@ -1592,11 +2274,22 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           );
 
           final right = Container(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: AppColors.bg,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: AppColors.border),
+              gradient: const LinearGradient(
+                colors: [Color(0xFFF4F7FF), Color(0xFFEEF3FF)],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+              ),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFCBDCFE), width: 1.6),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x1F0F172A),
+                  blurRadius: 18,
+                  offset: Offset(0, 10),
+                ),
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1604,17 +2297,18 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 Text(
                   'SITE OVERVIEW',
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: AppColors.muted2,
-                        letterSpacing: 1.6,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    color: AppColors.blue,
+                    letterSpacing: 1.2,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Text(
                   'Everything in one place.',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: const Color(0xFF0C1A36),
+                  ),
                 ),
                 const SizedBox(height: 10),
                 _aboutBullet(
@@ -1643,11 +2337,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              left,
-              const SizedBox(height: 16),
-              right,
-            ],
+            children: [left, const SizedBox(height: 16), right],
           );
         },
       ),
@@ -1660,16 +2350,20 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     required String body,
   }) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFF8FBFF), Color(0xFFEEF4FF)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFBED6FA), width: 1.6),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x120F172A),
-            blurRadius: 10,
-            offset: Offset(0, 6),
+            color: Color(0x1F0F172A),
+            blurRadius: 16,
+            offset: Offset(0, 10),
           ),
         ],
       ),
@@ -1677,34 +2371,47 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            width: 38,
+            height: 38,
             decoration: BoxDecoration(
-              color: AppColors.greenLight,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.greenBorder),
+              gradient: const LinearGradient(
+                colors: [Color(0xFF1D4ED8), Color(0xFF2563EB)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x401D4ED8),
+                  blurRadius: 14,
+                  offset: Offset(0, 8),
+                ),
+              ],
             ),
+            alignment: Alignment.center,
             child: Text(
               number,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: AppColors.blue,
-                    fontWeight: FontWeight.w800,
-                  ),
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w900,
+              ),
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
           Text(
             title,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w800,
+              color: AppColors.blue,
+            ),
           ),
           const SizedBox(height: 6),
           Text(
             body,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: AppColors.muted,
-                  height: 1.5,
-                ),
+              color: const Color(0xFF14213D),
+              height: 1.6,
+            ),
           ),
         ],
       ),
@@ -1766,434 +2473,581 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _tagPill(String label, Color bg, Color fg) {
+  Widget _buildHotlineSection() {
+    final hotlines = <Map<String, String>>[
+      {
+        'label': 'Mayor\'s Office',
+        'phone': '(075) 632 1757',
+        'dial': '0756321757',
+        'image': 'assets/public/images/logo1.png',
+      },
+      {
+        'label': 'Bureau of Fire Protection (BFP)',
+        'phone': '(075) 636 4321\n0943 424 2810\n0917 186 6611',
+        'dial': '0756364321',
+        'image': 'assets/public/images/logo2.png',
+      },
+      {
+        'label': 'Philippine National Police (PNP)',
+        'phone': '(075) 632 1754\n0998 598 5117',
+        'dial': '0756321754',
+        'image': 'assets/public/images/logo3.png',
+      },
+      {
+        'label': 'Pangasinan Electric Coop (PANELCO III)',
+        'phone': '0915 448 1608\n0942 700 9417',
+        'dial': '09154481608',
+        'image': 'assets/public/images/logo4.png',
+      },
+      {
+        'label': 'Mawadi-PrimeWater',
+        'phone': '0949 300 3375',
+        'dial': '09493003375',
+        'image': 'assets/public/images/logo5.png',
+      },
+      {
+        'label': 'MDRRMO',
+        'phone': '(075) 600 2564\n0969 223 6912',
+        'dial': '0756002564',
+        'image': 'assets/public/images/logo6.png',
+      },
+      {
+        'label': 'Rural Health Unit (RHU)',
+        'phone': '(075) 632 1874\n0912 679 8036',
+        'dial': '0756321874',
+        'image': 'assets/public/images/logo7.png',
+      },
+      {
+        'label': 'Mapandan Community Hospital',
+        'phone': '(075) 632 0491',
+        'dial': '0756320491',
+        'image': 'assets/public/images/logo8.png',
+      },
+      {
+        'label': 'Ambulance',
+        'phone': '0910 131 1110',
+        'dial': '09101311110',
+        'image': 'assets/public/images/logo9.png',
+      },
+      {
+        'label': 'MSWD',
+        'phone': '(075) 632 1751',
+        'dial': '0756321751',
+        'image': 'assets/public/images/logo10.png',
+      },
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Emergency Hotlines',
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.w800,
+            color: const Color(0xFF0C1A36),
+          ),
+        ),
+        const SizedBox(height: 12),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            const spacing = 12.0;
+            final columns = constraints.maxWidth >= 940
+                ? 4
+                : constraints.maxWidth >= 680
+                ? 3
+                : constraints.maxWidth >= 440
+                ? 2
+                : 1;
+            final cardWidth =
+                (constraints.maxWidth - spacing * (columns - 1)) / columns;
+            return Wrap(
+              spacing: spacing,
+              runSpacing: spacing,
+              children: hotlines
+                  .map(
+                    (item) => SizedBox(
+                      width: cardWidth,
+                      child: _buildHotlineCard(
+                        label: item['label']!,
+                        phone: item['phone']!,
+                        dialNumber: item['dial']!,
+                        imagePath: item['image']!,
+                      ),
+                    ),
+                  )
+                  .toList(),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmergencyGuideSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Emergency Guide',
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.w800,
+            color: const Color(0xFF0C1A36),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Open each emergency type to review the cause, effects, and what to do before, during, and after the incident.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: const Color(0xFF1F2937),
+            height: 1.6,
+          ),
+        ),
+        const SizedBox(height: 12),
+        _buildEmergencyGuideCard(
+          title: 'Typhoon / Cyclone',
+          subtitle: 'Wind, heavy rain, and storm surge',
+          cause:
+              'Low-pressure systems over warm seas can intensify into strong winds and prolonged heavy rain.',
+          effects:
+              'Flooding, flying debris, power interruptions, storm surge, and blocked roads.',
+          before:
+              'Charge devices, prepare a go-bag, secure loose items, and know your evacuation route.',
+          during:
+              'Stay indoors away from windows, monitor official alerts, and avoid floodwater.',
+          after:
+              'Watch for downed lines, unstable structures, and standing water before returning outside.',
+        ),
+        _buildEmergencyGuideCard(
+          title: 'Flood',
+          subtitle: 'Rapid water rise and contamination risk',
+          cause:
+              'Heavy rainfall, storm surge, overflowing rivers, and clogged drainage systems.',
+          effects:
+              'Strong currents, contaminated water, isolation, electrocution hazards, and damaged homes.',
+          before:
+              'Move essentials to higher places, prepare food and water, and identify safe higher ground.',
+          during:
+              'Evacuate early, cut power if safe, and never walk or drive through moving water.',
+          after:
+              'Use protective gear, avoid contaminated water, and return only when authorities say it is safe.',
+        ),
+        _buildEmergencyGuideCard(
+          title: 'Earthquake',
+          subtitle: 'Sudden ground shaking and aftershocks',
+          cause:
+              'Tectonic plates release built-up stress along faults beneath the ground.',
+          effects:
+              'Structural damage, falling debris, aftershocks, landslides, and utility disruptions.',
+          before:
+              'Secure heavy furniture, identify safe spots, and practice Drop, Cover, and Hold On.',
+          during:
+              'Drop, Cover, and Hold On. Stay away from glass and do not run during active shaking.',
+          after:
+              'Expect aftershocks, check injuries, avoid damaged buildings, and watch for gas or electrical leaks.',
+        ),
+        _buildEmergencyGuideCard(
+          title: 'Fire / Urban Blaze',
+          subtitle: 'Fast-moving heat, smoke, and toxic fumes',
+          cause:
+              'Faulty wiring, open flames, cooking accidents, overloaded outlets, or arson.',
+          effects:
+              'Burns, smoke inhalation, building damage, toxic air, and limited escape routes.',
+          before:
+              'Check exits, keep extinguishers ready, and avoid unsafe electrical setups.',
+          during:
+              'Stay low below smoke, feel doors for heat, evacuate quickly, and never re-enter the structure.',
+          after:
+              'Seek medical care for smoke exposure, avoid weakened areas, and wait for official clearance.',
+        ),
+        _buildEmergencyGuideCard(
+          title: 'Landslide',
+          subtitle: 'Slope failure after rain or shaking',
+          cause:
+              'Saturated soil, steep slopes, earthquakes, and excavation can destabilize the ground.',
+          effects:
+              'Buried homes, blocked roads, damaged utilities, and secondary slope failures.',
+          before:
+              'Watch for ground cracks, leaning trees, or unusual slope movement and prepare to evacuate early.',
+          during:
+              'Move away from the slide path immediately and warn nearby people if possible.',
+          after:
+              'Stay out of the area, watch for more movement, and wait for authorities to inspect the slope.',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmergencyGuideCard({
+    required String title,
+    required String subtitle,
+    required String cause,
+    required String effects,
+    required String before,
+    required String during,
+    required String after,
+  }) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: bg),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFF8FBFF), Color(0xFFEEF4FF)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFBED6FA), width: 1.4),
       ),
-      child: Text(
-        label,
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: fg,
-              fontWeight: FontWeight.w700,
-              fontSize: 10,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          leading: Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: AppColors.amberLight,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.amberBorder),
             ),
+            child: const Icon(
+              Icons.warning_amber_rounded,
+              color: AppColors.amberDeep,
+              size: 20,
+            ),
+          ),
+          title: Text(
+            title,
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w800,
+              color: AppColors.blue,
+            ),
+          ),
+          subtitle: Text(
+            subtitle,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppColors.muted,
+              height: 1.4,
+            ),
+          ),
+          children: [
+            _buildEmergencyGuideInfo('Cause', cause),
+            const SizedBox(height: 8),
+            _buildEmergencyGuideInfo('Effects', effects),
+            const SizedBox(height: 8),
+            _buildEmergencyGuideInfo('Before', before),
+            const SizedBox(height: 8),
+            _buildEmergencyGuideInfo('During', during),
+            const SizedBox(height: 8),
+            _buildEmergencyGuideInfo('After', after),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _pillBox(String label, String body, Color bg, Color fg) {
+  Widget _buildEmergencyGuideInfo(String label, String body) {
     return Container(
-      padding: const EdgeInsets.all(10),
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: bg),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              label,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: fg,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 11,
-                  ),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: AppColors.red,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1,
             ),
           ),
           const SizedBox(height: 6),
           Text(
             body,
-            softWrap: true,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: AppColors.text2,
-                  height: 1.4,
-                  fontSize: 11.5,
-                ),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppColors.text2,
+              height: 1.5,
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _disasterCard({
-    required String title,
-    required String tag,
-    required List<Widget> details,
+  Widget _buildHotlineCard({
+    required String label,
+    required String phone,
+    required String dialNumber,
+    required String imagePath,
   }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-          title: LayoutBuilder(
-            builder: (context, constraints) {
-              final narrow = constraints.maxWidth < 360;
-              final titleRow = Row(
-                children: [
-                  Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: AppColors.greenLight,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: AppColors.greenBorder),
-                    ),
-                    child: const Icon(
-                      Icons.warning_amber_rounded,
-                      color: AppColors.blue,
-                      size: 18,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.w800,
-                            fontSize: 13,
-                          ),
-                      maxLines: narrow ? 3 : 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (!narrow) ...[
-                    const SizedBox(width: 6),
-                    _tagPill(tag, AppColors.amberLight, AppColors.amberDeep),
-                  ],
-                ],
-              );
+    final phoneNumbers = phone
+        .split('\n')
+        .map((number) => number.trim())
+        .where((number) => number.isNotEmpty)
+        .toList();
+    final hasMultipleNumbers = phoneNumbers.length > 1;
 
-              if (!narrow) return titleRow;
-
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  titleRow,
-                  const SizedBox(height: 6),
-                  _tagPill(tag, AppColors.amberLight, AppColors.amberDeep),
-                ],
-              );
-            },
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _handleHotlineTap(
+          label: label,
+          phoneNumbers: phoneNumbers,
+          fallbackDialNumber: dialNumber,
+        ),
+        borderRadius: BorderRadius.circular(14),
+        child: Ink(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFF8FBFF), Colors.white],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFC8D7F3), width: 1.5),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x1F0F172A),
+                blurRadius: 14,
+                offset: Offset(0, 8),
+              ),
+            ],
           ),
-          children: details,
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.asset(
+                  imagePath,
+                  width: 42,
+                  height: 42,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.text,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      phone,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppColors.red,
+                        fontWeight: FontWeight.w700,
+                        height: 1.45,
+                      ),
+                    ),
+                    if (hasMultipleNumbers) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Tap to choose a number',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: AppColors.blue,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.call_outlined, color: AppColors.blue, size: 20),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildDisasterGuide() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'Natural disasters: causes, effects, and what to do',
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w800,
-              ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          'Quick reference for the most common hazards. Follow the before / during / after guidance and respect the do / do not reminders.',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: AppColors.muted,
-                height: 1.4,
-              ),
-        ),
-        const SizedBox(height: 12),
-        _disasterCard(
-          title: 'Typhoon / Cyclone',
-          tag: 'Wind - Surge - Rain',
-          details: [
-            _pillBox(
-              'Cause',
-              'Low-pressure system over warm ocean driving severe winds and rain.',
-              AppColors.greenLight,
-              AppColors.blue,
+  Future<void> _handleHotlineTap({
+    required String label,
+    required List<String> phoneNumbers,
+    required String fallbackDialNumber,
+  }) async {
+    if (phoneNumbers.length <= 1) {
+      await _callHotline(
+        phoneNumbers.isEmpty ? fallbackDialNumber : phoneNumbers.first,
+      );
+      return;
+    }
+
+    if (!mounted) return;
+
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFFFFFBFB),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 24),
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 42,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.borderMid,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.text,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Choose a number to open in your phone app.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.muted,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                ...phoneNumbers.map(
+                  (number) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: () => Navigator.of(context).pop(number),
+                        borderRadius: BorderRadius.circular(10),
+                        child: Ink(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 14,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppColors.border),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 38,
+                                height: 38,
+                                decoration: BoxDecoration(
+                                  color: AppColors.greenLight,
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: AppColors.greenBorder,
+                                  ),
+                                ),
+                                child: const Icon(
+                                  Icons.call_outlined,
+                                  color: AppColors.blue,
+                                  size: 18,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  number,
+                                  style: Theme.of(context).textTheme.bodyMedium
+                                      ?.copyWith(
+                                        color: AppColors.text,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Effects',
-              'Storm surge, flooding, power loss, flying debris.',
-              AppColors.orangeLight,
-              AppColors.orange,
+          ),
+        );
+      },
+    );
+
+    if (selected != null && selected.isNotEmpty) {
+      await _callHotline(selected);
+    }
+  }
+
+  Future<void> _callHotline(String phone) async {
+    final digits = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+    final uri = Uri(scheme: 'tel', path: digits);
+    try {
+      final opened = await launchUrl(
+        uri,
+        mode: LaunchMode.externalNonBrowserApplication,
+      );
+      if (opened) return;
+    } catch (_) {}
+
+    try {
+      final opened = await launchUrl(uri);
+      if (opened) return;
+    } catch (_) {}
+
+    if (mounted) {
+      _toast('Could not open phone app for $phone', isError: true);
+    }
+  }
+
+  Widget _buildAboutFooterCallout() {
+    return Container(
+      alignment: Alignment.center,
+      child: RichText(
+        textAlign: TextAlign.center,
+        text: TextSpan(
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: AppColors.text,
+          ),
+          children: const [
+            TextSpan(text: 'Need immediate help? Go to the '),
+            TextSpan(
+              text: 'SOS page',
+              style: TextStyle(color: AppColors.blue),
             ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Before',
-              'Secure loose items, charge phones, prep go-bag, know evacuation routes.',
-              AppColors.amberLight,
-              AppColors.amberDeep,
+            TextSpan(text: ' or file a '),
+            TextSpan(
+              text: 'report',
+              style: TextStyle(color: AppColors.blue),
             ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'During',
-              'Stay indoors away from windows; monitor official alerts; avoid floodwater.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'After',
-              'Watch for downed lines, avoid standing water, document damage safely.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Do',
-              'Evacuate when ordered; keep radio/phone for updates.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Don?t',
-              'Drive through floodwater; go outside during the eye.',
-              AppColors.redLight,
-              AppColors.red,
-            ),
+            TextSpan(text: '.'),
           ],
         ),
-        _disasterCard(
-          title: 'Flood',
-          tag: 'Water - Surge',
-          details: [
-            _pillBox(
-              'Cause',
-              'Heavy rain, storm surge, dam release, clogged drainage.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Effects',
-              'Rapid water rise, contamination, electrocution risk, landslide triggers.',
-              AppColors.orangeLight,
-              AppColors.orange,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Before',
-              'Move valuables up high, prep sandbags, plan high-ground paths.',
-              AppColors.amberLight,
-              AppColors.amberDeep,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'During',
-              'Get to higher ground fast; turn off main power if safe.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'After',
-              'Avoid wading; treat water as contaminated; use PPE for clean-up.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Do',
-              'Follow LGU evacuation cues and text alerts.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Don?t',
-              'Walk or drive through moving water; return home until cleared.',
-              AppColors.redLight,
-              AppColors.red,
-            ),
-          ],
-        ),
-        _disasterCard(
-          title: 'Earthquake',
-          tag: 'Shake - Aftershocks',
-          details: [
-            _pillBox(
-              'Cause',
-              'Sudden release of tectonic stress along faults.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Effects',
-              'Ground shaking, structural collapse, liquefaction, aftershocks.',
-              AppColors.orangeLight,
-              AppColors.orange,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Before',
-              'Bolt shelves, secure breakables, practice Drop-Cover-Hold drills.',
-              AppColors.amberLight,
-              AppColors.amberDeep,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'During',
-              'Drop, Cover, Hold On; stay away from glass; move to open space.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'After',
-              'Expect aftershocks; check gas leaks; avoid damaged structures.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Do',
-              'Use stairs, not elevators, when exiting after shaking.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Don?t',
-              'Run during shaking; stand under doorways or near windows.',
-              AppColors.redLight,
-              AppColors.red,
-            ),
-          ],
-        ),
-        _disasterCard(
-          title: 'Fire / Urban Blaze',
-          tag: 'Heat - Smoke',
-          details: [
-            _pillBox(
-              'Cause',
-              'Faulty wiring, open flames, cooking accidents, arson.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Effects',
-              'Smoke inhalation, burns, structural failure, toxic fumes.',
-              AppColors.orangeLight,
-              AppColors.orange,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Before',
-              'Check exits, keep extinguishers, avoid overloading outlets.',
-              AppColors.amberLight,
-              AppColors.amberDeep,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'During',
-              'Stay low under smoke, feel doors for heat, evacuate and do not re-enter.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'After',
-              'Call authorities, get medical check for smoke, do not switch power back on.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Do',
-              'Stop, Drop, Roll if clothes ignite.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Don?t',
-              'Use elevators; open hot doors; waste time gathering items.',
-              AppColors.redLight,
-              AppColors.red,
-            ),
-          ],
-        ),
-        _disasterCard(
-          title: 'Landslide',
-          tag: 'Slope - Soil',
-          details: [
-            _pillBox(
-              'Cause',
-              'Saturated slopes after heavy rain, earthquakes, or excavation.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Effects',
-              'Rapid ground movement, buried roads/houses, blocked rivers.',
-              AppColors.orangeLight,
-              AppColors.orange,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Before',
-              'Note cracks, leaning trees, recent slope cuts; prepare to relocate.',
-              AppColors.amberLight,
-              AppColors.amberDeep,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'During',
-              'Evacuate uphill and away from the slide path; alert neighbors.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'After',
-              'Avoid area until cleared; watch for secondary slides.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Do',
-              'Heed slope warnings; keep go-bag ready in rainy season.',
-              AppColors.greenLight,
-              AppColors.blue,
-            ),
-            const SizedBox(height: 8),
-            _pillBox(
-              'Don?t',
-              'Build or camp at the base of unstable slopes.',
-              AppColors.redLight,
-              AppColors.red,
-            ),
-          ],
-        ),
-      ],
+      ),
     );
   }
+
   Widget _aboutBullet(String text) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2211,8 +3065,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             child: Text(
               text,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: AppColors.muted,
-                height: 1.4,
+                color: const Color(0xFF1F2937),
+                height: 1.6,
               ),
             ),
           ),
@@ -2229,30 +3083,48 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         children: [
           Text(
             'Frequently Asked Questions',
-            style: Theme.of(
-              context,
-            ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+              fontWeight: FontWeight.w900,
+              color: const Color(0xFF0C1A36),
+              letterSpacing: -1,
+            ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 10),
           Text(
             'Everything you need to know about sending reports, staying verified, and keeping dispatchers focused on real emergencies.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: AppColors.muted,
-              height: 1.4,
+              color: const Color(0xFF1E293B),
+              height: 1.75,
+              fontSize: 15,
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildFaqChip('Verified callers'),
+              _buildFaqChip('GPS-first'),
+              _buildFaqChip('Offline ready'),
+              _buildFaqChip('Dispatcher-first UX'),
+            ],
+          ),
+          const SizedBox(height: 16),
           Container(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: AppColors.border),
+              gradient: const LinearGradient(
+                colors: [Color(0xFFF7FAFF), Color(0xFFEEF3FF)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFD3E2FF), width: 1.6),
               boxShadow: const [
                 BoxShadow(
-                  color: Color(0x140F172A),
-                  blurRadius: 14,
-                  offset: Offset(0, 8),
+                  color: Color(0x240F172A),
+                  blurRadius: 20,
+                  offset: Offset(0, 10),
                 ),
               ],
             ),
@@ -2268,45 +3140,184 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 _faqItem(
                   question: 'How does SVS reduce prank calls?',
                   answer:
-                      'Reports are verified through rate limiting, dispatcher review, and multi-channel checks to reduce false reports.',
+                      'We use attestation, phone validation, rate limits, dispatcher review, and pattern checks on repeat offenders. Photos and GPS improve verification.',
                 ),
                 _faqDivider(),
                 _faqItem(
                   question: 'Can I submit without GPS?',
                   answer:
-                      'Yes. You can still enter barangay, landmark, and street details manually to send a report.',
+                      'Yes. Fill in barangay, landmark, and street. If GPS later appears, we append it to help dispatch find you faster.',
                 ),
                 _faqDivider(),
                 _faqItem(
                   question: 'What if I lose connection mid-report?',
                   answer:
-                      'Your report is queued and retried once connectivity returns.',
+                      'Your submission is stored in the offline queue and automatically re-sent when connectivity returns. You can also call the hotline.',
                 ),
                 _faqDivider(),
                 _faqItem(
                   question: 'Who can access the dashboard?',
                   answer:
-                      'Authorized dispatchers and admins with secure login access only.',
+                      'Only authenticated dispatchers and admins with role-based access. Login attempts are rate-limited and monitored.',
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 20),
+          _buildFaqFeedbackCard(),
+          const SizedBox(height: 18),
           Wrap(
             spacing: 10,
             runSpacing: 10,
             children: [
               FilledButton(
                 onPressed: () => setState(() => _navIndex = 2),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.red,
+                  foregroundColor: Colors.white,
+                ),
                 child: const Text('Send a report'),
               ),
               OutlinedButton(
                 onPressed: () => setState(() => _navIndex = 0),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.blue,
+                  side: const BorderSide(color: AppColors.borderMid),
+                  backgroundColor: Colors.white,
+                ),
                 child: const Text('Learn about SVS'),
               ),
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildFaqChip(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFFDCE7FF)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x140F172A),
+            blurRadius: 10,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: AppColors.blue,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFaqFeedbackCard() {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFF8F0),
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x14000000),
+                blurRadius: 20,
+                offset: Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'We value your feedback',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: const Color(0xFFB23B3B),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Let us know how we can improve your experience or if you have any suggestions. Your input helps us serve you better.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF6A5A3A),
+                  height: 1.6,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                'Your Feedback',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: const Color(0xFF4A3A1A),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _faqFeedbackCtrl,
+                maxLines: 5,
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: Colors.white,
+                  hintText: 'Share your thoughts here...',
+                  hintStyle: const TextStyle(color: Color(0xFF9CA3AF)),
+                  contentPadding: const EdgeInsets.all(16),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Color(0xFFE0CDBD)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                      color: Color(0xFFE0CDBD),
+                      width: 1.7,
+                    ),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                      color: AppColors.red,
+                      width: 1.8,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: () {
+                  final text = _faqFeedbackCtrl.text.trim();
+                  if (text.isEmpty) {
+                    _toast('Please enter feedback first', isError: true);
+                    return;
+                  }
+                  _faqFeedbackCtrl.clear();
+                  _toast('Thanks for your feedback');
+                },
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFB23B3B),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text('Submit Feedback'),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -2320,31 +3331,66 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     required String answer,
     bool open = false,
   }) {
-    return Theme(
-      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
-        initiallyExpanded: open,
-        tilePadding: EdgeInsets.zero,
-        childrenPadding: const EdgeInsets.only(bottom: 10),
-        title: Text(
-          question,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            fontWeight: FontWeight.w700,
-            color: const Color(0xFF1F3560),
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFDCE7FF), width: 1.4),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x140F172A),
+            blurRadius: 12,
+            offset: Offset(0, 6),
           ),
-        ),
-        children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              answer,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: AppColors.muted,
-                height: 1.4,
+        ],
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: open,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+          leading: Container(
+            width: 28,
+            height: 28,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Color(0xFF1D4ED8), Color(0xFF2563EB)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.all(Radius.circular(10)),
+            ),
+            alignment: Alignment.center,
+            child: const Text(
+              '?',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w900,
               ),
             ),
           ),
-        ],
+          title: Text(
+            question,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w800,
+              color: const Color(0xFF0F1D3A),
+            ),
+          ),
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                answer,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF1F2937),
+                  height: 1.7,
+                  fontSize: 14.5,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2352,39 +3398,52 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   Widget _buildBottomNav() {
     return SafeArea(
       top: false,
-      child: Container(
-        padding: const EdgeInsets.only(top: 6),
-        decoration: BoxDecoration(
-          color: AppColors.navBg,
-          border: Border(
-            top: BorderSide(color: AppColors.border.withValues(alpha: 0.8)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xF7FFFFFF),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x140F172A),
+                blurRadius: 18,
+                offset: Offset(0, 8),
+              ),
+            ],
           ),
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _navIndex,
-          onTap: (index) => setState(() => _navIndex = index),
-          iconSize: 26,
-          selectedFontSize: 13,
-          unselectedFontSize: 12,
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w700),
-          items: const [
-            BottomNavigationBarItem(
-              icon: Icon(Icons.home_rounded),
-              label: 'About',
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: BottomNavigationBar(
+              currentIndex: _navIndex,
+              onTap: (index) => setState(() => _navIndex = index),
+              iconSize: 24,
+              selectedFontSize: 13,
+              unselectedFontSize: 12,
+              elevation: 0,
+              backgroundColor: Colors.transparent,
+              selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w700),
+              items: const [
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.home_rounded),
+                  label: 'About',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.sos_rounded),
+                  label: 'SOS',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.assignment_rounded),
+                  label: 'Report',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.quiz_rounded),
+                  label: 'FAQ',
+                ),
+              ],
             ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.sos_rounded),
-              label: 'SOS',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.assignment_rounded),
-              label: 'Report',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.quiz_rounded),
-              label: 'FAQ',
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -2395,19 +3454,19 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
       child: Container(
         decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.border),
+          color: const Color(0xCCFFFFFF),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.border.withValues(alpha: 0.85)),
           boxShadow: const [
             BoxShadow(
               color: Color(0x120F172A),
-              blurRadius: 14,
-              offset: Offset(0, 6),
+              blurRadius: 20,
+              offset: Offset(0, 8),
             ),
           ],
         ),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
             children: [
               Container(
@@ -2434,7 +3493,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                       'SVS',
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         color: AppColors.text,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w900,
                         height: 1,
                       ),
                     ),
@@ -2451,7 +3510,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                       'Verified emergency reporting and SOS.',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: AppColors.muted,
-                        height: 1.3,
+                        height: 1.35,
                       ),
                     ),
                   ],
@@ -2469,19 +3528,23 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
       child: Container(
         decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppColors.border),
+          gradient: const LinearGradient(
+            colors: [Color(0xFFF8FBFF), Color(0xFFFFF8EF)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
           boxShadow: const [
             BoxShadow(
-              color: Color(0x1F0F172A),
-              blurRadius: 12,
-              offset: Offset(0, 6),
+              color: Color(0x160F172A),
+              blurRadius: 20,
+              offset: Offset(0, 10),
             ),
           ],
         ),
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
@@ -2557,9 +3620,11 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.border),
+                  color: const Color(0xF7FFFFFF),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: AppColors.border.withValues(alpha: 0.8),
+                  ),
                 ),
                 child: Text(
                   'Tap to send instant SOS. Your location will be sent to dispatchers immediately.',
@@ -2633,245 +3698,388 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
 
   Widget _buildForm() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-      child: Form(
-        key: _formKey,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildTitleSection(),
-            const SizedBox(height: 16),
-            _buildAlertStrip(),
-            if (kDebugMode) ...[
-              const SizedBox(height: 12),
-              _buildSupabaseDebug(),
-            ],
-            const SizedBox(height: 16),
-            _buildQuickGuide(),
-            const SizedBox(height: 12),
-            _buildCard(
-              step: 'Step 01',
-              title: 'Your Information',
-              subtitle: 'Who is making this report?',
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _textField(
-                          controller: _nameCtrl,
-                          label: 'Full Name',
-                          hint: 'Juan dela Cruz',
-                          validator: (v) =>
-                              v == null || v.trim().isEmpty ? 'Required' : null,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _textField(
-                          controller: _contactCtrl,
-                          label: 'Contact Number',
-                          hint: '917 123 4567',
-                          keyboardType: TextInputType.phone,
-                          validator: (v) =>
-                              v == null || v.trim().isEmpty ? 'Required' : null,
-                          prefixText: '+63 ',
-                        ),
-                      ),
-                    ],
-                  ),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 860),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildTitleSection(),
+                const SizedBox(height: 16),
+                _buildAlertStrip(),
+                if (kDebugMode && _showReporterDebugPanels) ...[
+                  const SizedBox(height: 12),
+                  _buildAlertDebugPanel(),
                 ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            _buildCard(
-              step: 'Step 02',
-              title: 'Type of Emergency',
-              subtitle: 'Select the category that best describes the incident',
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  const spacing = 10.0;
-                  const runSpacing = 10.0;
-                  const columns = 3;
-                  final totalSpacing = spacing * (columns - 1);
-                  final chipWidth =
-                      (constraints.maxWidth - totalSpacing) / columns;
-                  return Wrap(
-                    spacing: spacing,
-                    runSpacing: runSpacing,
-                    children: _types
-                        .map(
-                          (type) => SizedBox(
-                            width: chipWidth,
+                if (kDebugMode && _showReporterDebugPanels) ...[
+                  const SizedBox(height: 12),
+                  _buildSupabaseDebug(),
+                ],
+                const SizedBox(height: 18),
+                _buildCard(
+                  step: 'Step 01',
+                  title: 'Reporter details',
+                  subtitle:
+                      'Who is making this report and how can dispatch call back?',
+                  icon: Icons.badge_outlined,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final wide = constraints.maxWidth >= 620;
+                      return wide
+                          ? Row(
+                              children: [
+                                Expanded(
+                                  child: _textField(
+                                    controller: _nameCtrl,
+                                    label: 'Full name',
+                                    hint: 'Juan dela Cruz',
+                                    validator: (v) =>
+                                        v == null || v.trim().isEmpty
+                                        ? 'Required'
+                                        : null,
+                                  ),
+                                ),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: _textField(
+                                    controller: _contactCtrl,
+                                    label: 'Contact number',
+                                    hint: '917 123 4567',
+                                    keyboardType: TextInputType.phone,
+                                    validator: (v) =>
+                                        v == null || v.trim().isEmpty
+                                        ? 'Required'
+                                        : null,
+                                    prefixText: '+63 ',
+                                  ),
+                                ),
+                              ],
+                            )
+                          : Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _textField(
+                                  controller: _nameCtrl,
+                                  label: 'Full name',
+                                  hint: 'Juan dela Cruz',
+                                  validator: (v) =>
+                                      v == null || v.trim().isEmpty
+                                      ? 'Required'
+                                      : null,
+                                ),
+                                const SizedBox(height: 14),
+                                _textField(
+                                  controller: _contactCtrl,
+                                  label: 'Contact number',
+                                  hint: '917 123 4567',
+                                  keyboardType: TextInputType.phone,
+                                  validator: (v) =>
+                                      v == null || v.trim().isEmpty
+                                      ? 'Required'
+                                      : null,
+                                  prefixText: '+63 ',
+                                ),
+                              ],
+                            );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 14),
+                _buildCard(
+                  step: 'Step 02',
+                  title: 'Emergency type',
+                  subtitle: 'Choose the closest category for the incident.',
+                  icon: Icons.emergency_outlined,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final columns = constraints.maxWidth >= 680 ? 3 : 2;
+                      const spacing = 12.0;
+                      final width =
+                          (constraints.maxWidth - (spacing * (columns - 1))) /
+                          columns;
+                      return Wrap(
+                        spacing: spacing,
+                        runSpacing: spacing,
+                        children: _types.map((type) {
+                          final meta = _emergencyTypeMeta(type);
+                          return SizedBox(
+                            width: width,
                             child: _SelectChip(
                               label: type,
+                              subtitle: meta.$1,
+                              icon: meta.$2,
                               selected: _selectedType == type,
                               onTap: () => setState(() => _selectedType = type),
                             ),
-                          ),
-                        )
-                        .toList(),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 12),
-            _buildCard(
-              step: 'Step 03',
-              title: 'Severity Level',
-              subtitle: 'How serious is the situation right now?',
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _SeverityButton(
-                      label: 'Low',
-                      color: AppColors.green,
-                      selected: _selectedSeverity == 'Low',
-                      onTap: () => setState(() => _selectedSeverity = 'Low'),
-                    ),
+                          );
+                        }).toList(),
+                      );
+                    },
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _SeverityButton(
-                      label: 'Medium',
-                      color: AppColors.amberDark,
-                      selected: _selectedSeverity == 'Medium',
-                      onTap: () => setState(() => _selectedSeverity = 'Medium'),
-                    ),
+                ),
+                const SizedBox(height: 14),
+                _buildCard(
+                  step: 'Step 03',
+                  title: 'Severity level',
+                  subtitle:
+                      'Tell responders how urgent the situation is right now.',
+                  icon: Icons.priority_high_rounded,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final wide = constraints.maxWidth >= 560;
+                      return wide
+                          ? Row(
+                              children: [
+                                Expanded(
+                                  child: _SeverityButton(
+                                    label: 'Low',
+                                    subtitle: 'Needs attention',
+                                    icon: Icons.shield_outlined,
+                                    color: AppColors.green,
+                                    selected: _selectedSeverity == 'Low',
+                                    onTap: () => setState(
+                                      () => _selectedSeverity = 'Low',
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: _SeverityButton(
+                                    label: 'Medium',
+                                    subtitle: 'Response needed',
+                                    icon: Icons.report_problem_outlined,
+                                    color: AppColors.amberDark,
+                                    selected: _selectedSeverity == 'Medium',
+                                    onTap: () => setState(
+                                      () => _selectedSeverity = 'Medium',
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: _SeverityButton(
+                                    label: 'High',
+                                    subtitle: 'Immediate danger',
+                                    icon: Icons.warning_amber_rounded,
+                                    color: AppColors.red,
+                                    selected: _selectedSeverity == 'High',
+                                    onTap: () => setState(
+                                      () => _selectedSeverity = 'High',
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            )
+                          : Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _SeverityButton(
+                                  label: 'Low',
+                                  subtitle: 'Needs attention',
+                                  icon: Icons.shield_outlined,
+                                  color: AppColors.green,
+                                  selected: _selectedSeverity == 'Low',
+                                  onTap: () =>
+                                      setState(() => _selectedSeverity = 'Low'),
+                                ),
+                                const SizedBox(height: 12),
+                                _SeverityButton(
+                                  label: 'Medium',
+                                  subtitle: 'Response needed',
+                                  icon: Icons.report_problem_outlined,
+                                  color: AppColors.amberDark,
+                                  selected: _selectedSeverity == 'Medium',
+                                  onTap: () => setState(
+                                    () => _selectedSeverity = 'Medium',
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                _SeverityButton(
+                                  label: 'High',
+                                  subtitle: 'Immediate danger',
+                                  icon: Icons.warning_amber_rounded,
+                                  color: AppColors.red,
+                                  selected: _selectedSeverity == 'High',
+                                  onTap: () => setState(
+                                    () => _selectedSeverity = 'High',
+                                  ),
+                                ),
+                              ],
+                            );
+                    },
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _SeverityButton(
-                      label: 'High',
-                      color: AppColors.red,
-                      selected: _selectedSeverity == 'High',
-                      onTap: () => setState(() => _selectedSeverity = 'High'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            _buildCard(
-              step: 'Step 04',
-              title: 'Location',
-              subtitle: 'Where is the emergency happening?',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _detectingGps ? null : _detectGps,
-                    icon: _detectingGps
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.gps_fixed),
-                    label: Text(
-                      _gps == null
-                          ? 'Auto-detect My Location (GPS)'
-                          : 'Detected: $_gps (${_gpsAccuracy ?? 0}m)',
-                    ),
-                  ),
-                  if (_gps != null) ...[
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Detected location: $_gps',
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(color: AppColors.muted),
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: () => _openMap(_gps!),
-                          child: const Text('Open map'),
-                        ),
-                      ],
-                    ),
-                  ],
-                  if (_showMap && _mapLat != null && _mapLng != null) ...[
-                    const SizedBox(height: 12),
-                    _buildLocationMap(_mapLat!, _mapLng!),
-                  ],
-                  const SizedBox(height: 12),
-                  Row(
+                ),
+                const SizedBox(height: 14),
+                _buildCard(
+                  step: 'Step 04',
+                  title: 'Location',
+                  subtitle:
+                      'Share the exact place so responders can reach you faster.',
+                  icon: Icons.location_on_outlined,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(
-                        child: _textField(
-                          controller: _barangayCtrl,
-                          label: 'Barangay',
-                          hint: 'Barangay Rizal',
-                          validator: (v) =>
-                              v == null || v.trim().isEmpty ? 'Required' : null,
+                      FilledButton.icon(
+                        onPressed: _detectingGps ? null : _detectGps,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFE9F2FF),
+                          foregroundColor: AppColors.blue,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: const BorderSide(color: AppColors.borderMid),
+                          ),
+                        ),
+                        icon: _detectingGps
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.gps_fixed_rounded),
+                        label: Text(
+                          _gps == null
+                              ? 'Detect my location'
+                              : 'Detected: $_gps (+/-${_gpsAccuracy ?? 0}m)',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _textField(
-                          controller: _landmarkCtrl,
-                          label: 'Nearest Landmark',
-                          hint: 'Near Municipal Hall',
-                          validator: (v) =>
-                              v == null || v.trim().isEmpty ? 'Required' : null,
-                        ),
+                      const SizedBox(height: 12),
+                      if (_showMap && _mapLat != null && _mapLng != null)
+                        _buildLocationMap(_mapLat!, _mapLng!)
+                      else
+                        _buildMapPlaceholder(),
+                      const SizedBox(height: 14),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final wide = constraints.maxWidth >= 620;
+                          return wide
+                              ? Row(
+                                  children: [
+                                    Expanded(
+                                      child: _textField(
+                                        controller: _barangayCtrl,
+                                        label: 'Barangay',
+                                        hint: 'Barangay Rizal',
+                                        validator: (v) =>
+                                            v == null || v.trim().isEmpty
+                                            ? 'Required'
+                                            : null,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 14),
+                                    Expanded(
+                                      child: _textField(
+                                        controller: _landmarkCtrl,
+                                        label: 'Nearest landmark',
+                                        hint: 'Near Municipal Hall',
+                                        validator: (v) =>
+                                            v == null || v.trim().isEmpty
+                                            ? 'Required'
+                                            : null,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    _textField(
+                                      controller: _barangayCtrl,
+                                      label: 'Barangay',
+                                      hint: 'Barangay Rizal',
+                                      validator: (v) =>
+                                          v == null || v.trim().isEmpty
+                                          ? 'Required'
+                                          : null,
+                                    ),
+                                    const SizedBox(height: 14),
+                                    _textField(
+                                      controller: _landmarkCtrl,
+                                      label: 'Nearest landmark',
+                                      hint: 'Near Municipal Hall',
+                                      validator: (v) =>
+                                          v == null || v.trim().isEmpty
+                                          ? 'Required'
+                                          : null,
+                                    ),
+                                  ],
+                                );
+                        },
+                      ),
+                      const SizedBox(height: 14),
+                      _textField(
+                        controller: _streetCtrl,
+                        label: 'Street / additional details',
+                        hint: 'Street name, purok, or access notes',
+                        validator: (v) =>
+                            v == null || v.trim().isEmpty ? 'Required' : null,
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  _textField(
-                    controller: _streetCtrl,
-                    label: 'Street / Additional Details',
-                    hint: 'Street name or additional details',
-                    validator: (v) =>
-                        v == null || v.trim().isEmpty ? 'Required' : null,
+                ),
+                const SizedBox(height: 14),
+                _buildCard(
+                  step: 'Step 05',
+                  title: 'Incident details',
+                  subtitle:
+                      'Describe what is happening and attach a photo if possible.',
+                  icon: Icons.description_outlined,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _textField(
+                        controller: _descCtrl,
+                        label: 'Description',
+                        hint:
+                            'Describe what is happening, how many people are affected, and visible hazards.',
+                        maxLines: 5,
+                        validator: (v) =>
+                            v == null || v.trim().isEmpty ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 14),
+                      _buildPhotoPicker(),
+                    ],
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            _buildCard(
-              step: 'Step 05',
-              title: 'Incident Details',
-              subtitle: 'Describe the situation and attach a photo if possible',
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _textField(
-                    controller: _descCtrl,
-                    label: 'Description',
-                    hint:
-                        'Describe what is happening. Include number of people affected and hazards.',
-                    maxLines: 4,
-                    validator: (v) =>
-                        v == null || v.trim().isEmpty ? 'Required' : null,
+                ),
+                const SizedBox(height: 18),
+                FilledButton.icon(
+                  onPressed: _submitting ? null : _submitReport,
+                  icon: _submitting
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.send_rounded),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.red,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 18),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    textStyle: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 15,
+                    ),
                   ),
-                  const SizedBox(height: 12),
-                  _buildPhotoPicker(),
-                ],
-              ),
+                  label: Text(
+                    _submitting
+                        ? 'Submitting emergency report...'
+                        : 'Submit emergency report',
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: _submitting ? null : _submitReport,
-              icon: _submitting
-                  ? const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.send),
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.amberDark,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
-              label: Text(
-                _submitting ? 'Submitting...' : 'Submit Emergency Report',
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -2880,15 +4088,15 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   Widget _buildLocationMap(double lat, double lng) {
     final target = LatLng(lat, lng);
     return Container(
-      height: 220,
+      height: 260,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.border),
         boxShadow: const [
           BoxShadow(
             color: Color(0x1F0F172A),
-            blurRadius: 12,
-            offset: Offset(0, 6),
+            blurRadius: 18,
+            offset: Offset(0, 10),
           ),
         ],
       ),
@@ -2896,16 +4104,25 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       child: Stack(
         children: [
           FlutterMap(
+            mapController: _mapController,
             options: MapOptions(
               initialCenter: target,
-              initialZoom: 17,
+              initialZoom: _mapZoom,
               interactionOptions: const InteractionOptions(
                 flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
               ),
+              onMapEvent: (event) {
+                final nextZoom = event.camera.zoom;
+                if (mounted && (nextZoom - _mapZoom).abs() > 0.01) {
+                  setState(() => _mapZoom = nextZoom);
+                }
+              },
             ),
             children: [
               TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                urlTemplate: _mapSatellite
+                    ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                    : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.smart_verification_system',
               ),
               MarkerLayer(
@@ -2925,14 +4142,14 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             ],
           ),
           Positioned(
-            top: 10,
-            left: 10,
-            right: 10,
+            top: 12,
+            left: 12,
+            right: 12,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
-                color: const Color(0xF2FFFFFF),
-                borderRadius: BorderRadius.circular(12),
+                color: const Color(0xF4FFFFFF),
+                borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: AppColors.border),
               ),
               child: Row(
@@ -2940,11 +4157,24 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                   const Icon(Icons.location_on, color: AppColors.red, size: 16),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text(
-                      'Detected location: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}',
-                      style: Theme.of(
-                        context,
-                      ).textTheme.labelSmall?.copyWith(color: AppColors.muted),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'Detected location',
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: AppColors.text,
+                                fontWeight: FontWeight.w800,
+                              ),
+                        ),
+                        Text(
+                          '${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}',
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(color: AppColors.muted),
+                        ),
+                      ],
                     ),
                   ),
                   TextButton(
@@ -2975,7 +4205,131 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               ),
             ),
           ),
+          Positioned(
+            left: 12,
+            bottom: 12,
+            child: Row(
+              children: [
+                _mapControlButton(
+                  icon: _mapSatellite
+                      ? Icons.map_outlined
+                      : Icons.satellite_alt_outlined,
+                  label: _mapSatellite ? 'Map' : 'Satellite',
+                  onTap: () => setState(() => _mapSatellite = !_mapSatellite),
+                ),
+                const SizedBox(width: 8),
+                _mapControlButton(
+                  icon: Icons.remove,
+                  label: 'Out',
+                  onTap: () {
+                    final nextZoom = (_mapZoom - 1).clamp(5.0, 18.0).toDouble();
+                    _mapController.move(target, nextZoom);
+                    setState(() => _mapZoom = nextZoom);
+                  },
+                ),
+                const SizedBox(width: 8),
+                _mapControlButton(
+                  icon: Icons.add,
+                  label: 'In',
+                  onTap: () {
+                    final nextZoom = (_mapZoom + 1).clamp(5.0, 18.0).toDouble();
+                    _mapController.move(target, nextZoom);
+                    setState(() => _mapZoom = nextZoom);
+                  },
+                ),
+              ],
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _mapControlButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xF4FFFFFF),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: AppColors.text2),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: AppColors.text2,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMapPlaceholder() {
+    return Container(
+      height: 220,
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFEAF2FF), Color(0xFFFFF7E6)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.borderMid),
+      ),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: const Icon(
+                  Icons.map_outlined,
+                  color: AppColors.blue,
+                  size: 28,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Map preview will appear here',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Use GPS detection to pin the incident and automatically help fill the location fields.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppColors.text2,
+                  height: 1.5,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -3012,20 +4366,41 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           ),
         ),
         const SizedBox(height: 8),
-        Text(
-          'Report an Emergency',
-          style: Theme.of(
-            context,
-          ).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w800),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(0, 6, 0, 2),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: AppColors.border.withValues(alpha: 0.55),
+              ),
+            ),
+          ),
+          child: RichText(
+            text: TextSpan(
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                fontWeight: FontWeight.w900,
+                color: AppColors.text,
+                height: 1.05,
+                letterSpacing: -1.2,
+              ),
+              children: const [
+                TextSpan(text: 'Report an '),
+                TextSpan(
+                  text: 'Emergency',
+                  style: TextStyle(color: AppColors.red),
+                ),
+              ],
+            ),
+          ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 10),
         Text(
           'Your report will be received immediately by SVS dispatchers. Provide as much detail as possible for a faster response.',
           style: Theme.of(
             context,
           ).textTheme.bodySmall?.copyWith(color: AppColors.text2, height: 1.5),
         ),
-        const SizedBox(height: 10),
       ],
     );
   }
@@ -3034,10 +4409,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFFFEFCE8), Color(0xFFFEF2F2)],
-        ),
-        borderRadius: BorderRadius.circular(16),
+        color: const Color(0xFFFEFAF1),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: AppColors.orangeBorder),
       ),
       child: Row(
@@ -3063,21 +4436,18 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _sosStepCard({
-    required String title,
-    required String body,
-  }) {
+  Widget _sosStepCard({required String title, required String body}) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFFF2F7FF),
-        borderRadius: BorderRadius.circular(18),
+        color: const Color(0xF8FFFFFF),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: AppColors.borderMid),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x140F172A),
-            blurRadius: 14,
-            offset: Offset(0, 8),
+            color: Color(0x100F172A),
+            blurRadius: 12,
+            offset: Offset(0, 6),
           ),
         ],
       ),
@@ -3087,17 +4457,17 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           Text(
             title,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.red,
-                ),
+              fontWeight: FontWeight.w800,
+              color: AppColors.red,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
             body,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: AppColors.text2,
-                  height: 1.5,
-                ),
+              color: AppColors.text2,
+              height: 1.5,
+            ),
           ),
         ],
       ),
@@ -3150,125 +4520,40 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _guideItem({
-    required String number,
-    required String title,
-    required String subtitle,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.text,
-                      ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: AppColors.muted,
-                      ),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            width: 32,
-            height: 32,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: AppColors.amberLight,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.amberBorder),
-            ),
-            child: Text(
-              number,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: AppColors.amberDeep,
-                    fontWeight: FontWeight.w800,
-                  ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildQuickGuide() {
-    return _buildCard(
-      step: 'Quick Guide',
-      title: 'Complete the report in order',
-      subtitle:
-          'Follow the five sections below. The most important details are your callback number, exact location, and a short description.',
-      child: Column(
-        children: [
-          _guideItem(
-            number: '01',
-            title: 'Reporter details',
-            subtitle: 'Name and contact number',
-          ),
-          _guideItem(
-            number: '02',
-            title: 'Emergency type',
-            subtitle: 'Choose the closest match',
-          ),
-          _guideItem(
-            number: '03',
-            title: 'Severity',
-            subtitle: 'Tell dispatch how urgent it is',
-          ),
-          _guideItem(
-            number: '04',
-            title: 'Location',
-            subtitle: 'GPS, barangay, landmark, street',
-          ),
-          _guideItem(
-            number: '05',
-            title: 'Incident details',
-            subtitle: 'Description and optional photo',
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildPhotoPicker() {
     return GestureDetector(
       onTap: _pickPhoto,
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
-          color: AppColors.bg,
-          borderRadius: BorderRadius.circular(14),
+          color: const Color(0xFFF5F7FF),
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(color: AppColors.borderMid, width: 2),
         ),
         child: _photoFiles.isEmpty
             ? Column(
                 children: [
-                  const Icon(
-                    Icons.camera_alt_outlined,
-                    size: 32,
-                    color: AppColors.muted2,
+                  Container(
+                    width: 54,
+                    height: 54,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: const Icon(
+                      Icons.camera_alt_outlined,
+                      size: 28,
+                      color: AppColors.muted2,
+                    ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 10),
                   Text(
                     'Tap to add a photo',
-                    style: Theme.of(context).textTheme.bodySmall,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -3346,10 +4631,13 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   }
 
   Widget _buildSupabaseDebug() {
-    if (!kDebugMode) return const SizedBox.shrink();
+    if (!kDebugMode || !_showReporterDebugPanels) {
+      return const SizedBox.shrink();
+    }
     final url = _supabaseUrlEnv.trim();
     final anon = _supabaseAnonKeyEnv.trim();
     final bucket = _supabaseBucketEnv.trim();
+    final serverUrl = _effectiveBaseUrl();
     final anonLooksJwt = anon.startsWith('eyJ');
     final anonHint = anon.isEmpty ? '(empty)' : '${anon.substring(0, 8)}...';
 
@@ -3370,6 +4658,36 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 8),
+          _configStatusLine(
+            label: 'Server',
+            ok: _baseUrlReady,
+            value: serverUrl,
+          ),
+          const SizedBox(height: 6),
+          _configStatusLine(
+            label: 'Alerts',
+            ok: !_alertDebugStatus.startsWith('error'),
+            value: '$_alertDebugStatus via $_alertDebugSource',
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => unawaited(_checkForAdminAlerts()),
+                  child: const Text('Check alerts now'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _triggerTestAlert,
+                  child: const Text('Test notification'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
           _configStatusLine(
             label: 'URL',
             ok: url.isNotEmpty,
@@ -3392,109 +4710,33 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildFooter({required bool showContact}) {
+  Widget _buildFooter() {
     final year = DateTime.now().year;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 24,
-                height: 24,
-                decoration: BoxDecoration(
-                  color: AppColors.amberLight,
-                  borderRadius: BorderRadius.circular(7),
-                  border: Border.all(color: AppColors.amberBorder),
-                ),
-                child: const Icon(
-                  Icons.local_fire_department,
-                  color: AppColors.amberDeep,
-                  size: 13,
-                ),
-              ),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'Smart Verification System',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.text,
-                        height: 1.1,
-                      ),
-                    ),
-                    Text(
-                      'Emergency Reporting',
-                      style: Theme.of(
-                        context,
-                      ).textTheme.labelSmall?.copyWith(
-                        color: AppColors.muted2,
-                        height: 1.15,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(0, 22, 0, 6),
+        decoration: BoxDecoration(
+          border: Border(
+            top: BorderSide(color: AppColors.borderMid.withValues(alpha: 0.8)),
           ),
-          const SizedBox(height: 6),
-          Text(
-            'Fast and reliable citizen incident reporting with real-time dispatcher visibility and location-aware alerts.',
-            style: Theme.of(
-              context,
-            ).textTheme.labelLarge?.copyWith(
-              color: AppColors.muted,
-              height: 1.25,
-            ),
-          ),
-          if (showContact) ...[
-            const SizedBox(height: 8),
-            Text(
-              'Contact Us',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                fontWeight: FontWeight.w700,
-                color: AppColors.text,
-              ),
-            ),
-            const SizedBox(height: 3),
-            Wrap(
-              spacing: 8,
-              runSpacing: 2,
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _footerMeta('Hotline: 911'),
-                _footerMeta('Office: +63 917 000 0000'),
-                _footerMeta('Email: support@svs.local'),
+                Text(
+                  'Copyright $year SVS. All rights reserved.',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelSmall?.copyWith(color: AppColors.muted2),
+                ),
               ],
-            ),
-          ],
-          const SizedBox(height: 8),
-          Text(
-            'Copyright $year SVS. All rights reserved.',
-            style: Theme.of(
-              context,
-            ).textTheme.labelSmall?.copyWith(
-              color: AppColors.muted2,
-              fontSize: 10,
-            ),
-          ),
-        ],
+            );
+          },
+        ),
       ),
-    );
-  }
-
-  Widget _footerMeta(String text) {
-    return Text(
-      text,
-      style: Theme.of(
-        context,
-      ).textTheme.labelSmall?.copyWith(color: AppColors.text2, height: 1.2),
     );
   }
 
@@ -3503,17 +4745,18 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     required String title,
     required String subtitle,
     required Widget child,
+    IconData? icon,
   }) {
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.border, width: 1.2),
+        color: const Color(0xEFFFFFFF),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.85)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x140F172A),
-            blurRadius: 12,
+            color: Color(0x100F172A),
+            blurRadius: 14,
             offset: Offset(0, 6),
           ),
         ],
@@ -3521,29 +4764,67 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            step,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: AppColors.red,
-              letterSpacing: 2,
-              fontWeight: FontWeight.w700,
+          Container(
+            padding: const EdgeInsets.only(bottom: 14),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(
+                  color: AppColors.border.withValues(alpha: 0.65),
+                ),
+              ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (icon != null) ...[
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFF),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: Icon(icon, color: AppColors.blue, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        step,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: AppColors.red,
+                          letterSpacing: 1.8,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.text,
+                            ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.muted,
+                          height: 1.45,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            title,
-            style: Theme.of(
-              context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            subtitle,
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: AppColors.muted),
-          ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 16),
           child,
         ],
       ),
@@ -3559,23 +4840,74 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     String? prefixText,
     int maxLines = 1,
   }) {
-    return TextFormField(
-      controller: controller,
-      validator: validator,
-      keyboardType: keyboardType,
-      maxLines: maxLines,
-      decoration: InputDecoration(
-        labelText: label,
-        hintText: hint,
-        prefixText: prefixText,
-        filled: true,
-        fillColor: AppColors.bg,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.border),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label.toUpperCase(),
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+            color: AppColors.text2,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.8,
+          ),
         ),
-      ),
+        const SizedBox(height: 8),
+        TextFormField(
+          controller: controller,
+          validator: validator,
+          keyboardType: keyboardType,
+          maxLines: maxLines,
+          decoration: InputDecoration(
+            hintText: hint,
+            prefixText: prefixText,
+            filled: true,
+            fillColor: const Color(0xFFFBFCFF),
+            contentPadding: EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: maxLines > 1 ? 16 : 14,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: BorderSide(
+                color: AppColors.border.withValues(alpha: 0.9),
+              ),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(
+                color: AppColors.amberDark,
+                width: 1.5,
+              ),
+            ),
+            errorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: AppColors.red),
+            ),
+            focusedErrorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: AppColors.red, width: 1.5),
+            ),
+          ),
+        ),
+      ],
     );
+  }
+
+  (String, IconData) _emergencyTypeMeta(String type) {
+    switch (type) {
+      case 'Fire':
+        return ('Smoke or active flames', Icons.local_fire_department_outlined);
+      case 'Flood':
+        return ('Rising water or overflow', Icons.water_damage_outlined);
+      case 'Medical':
+        return ('Injury or health emergency', Icons.medical_services_outlined);
+      case 'Accident':
+        return ('Vehicle or road incident', Icons.car_crash_outlined);
+      case 'Landslide':
+        return ('Road collapse or debris', Icons.landscape_outlined);
+      default:
+        return ('Unlisted incident type', Icons.more_horiz_rounded);
+    }
   }
 
   Future<void> _openMap(String gps) async {
@@ -3593,11 +4925,15 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
 class _SelectChip extends StatelessWidget {
   const _SelectChip({
     required this.label,
+    required this.subtitle,
+    required this.icon,
     required this.selected,
     required this.onTap,
   });
 
   final String label;
+  final String subtitle;
+  final IconData icon;
   final bool selected;
   final VoidCallback onTap;
 
@@ -3605,30 +4941,60 @@ class _SelectChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        constraints: const BoxConstraints(minHeight: 44),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        constraints: const BoxConstraints(minHeight: 110),
         decoration: BoxDecoration(
-          color: selected ? AppColors.amberLight : AppColors.bg,
-          borderRadius: BorderRadius.circular(12),
+          color: selected ? const Color(0xFFFFFAEE) : const Color(0xFFFBFCFF),
+          borderRadius: BorderRadius.circular(10),
           border: Border.all(
             color: selected ? AppColors.amberBorder : AppColors.border,
           ),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x080F172A),
+              blurRadius: 10,
+              offset: Offset(0, 4),
+            ),
+          ],
         ),
-        child: Center(
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Text(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: selected ? const Color(0xFFFFF8E4) : Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: selected ? AppColors.amberBorder : AppColors.border,
+                ),
+              ),
+              child: Icon(
+                icon,
+                color: selected ? AppColors.amberDeep : AppColors.muted,
+                size: 20,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
               label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                 color: selected ? AppColors.amberDeep : AppColors.muted,
                 fontWeight: FontWeight.w700,
               ),
             ),
-          ),
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: AppColors.muted2,
+                height: 1.35,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -3638,12 +5004,16 @@ class _SelectChip extends StatelessWidget {
 class _SeverityButton extends StatelessWidget {
   const _SeverityButton({
     required this.label,
+    required this.subtitle,
+    required this.icon,
     required this.color,
     required this.selected,
     required this.onTap,
   });
 
   final String label;
+  final String subtitle;
+  final IconData icon;
   final Color color;
   final bool selected;
   final VoidCallback onTap;
@@ -3652,21 +5022,67 @@ class _SeverityButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
         decoration: BoxDecoration(
-          color: selected ? color.withValues(alpha: 0.1) : AppColors.bg,
-          borderRadius: BorderRadius.circular(12),
+          color: selected
+              ? color.withValues(alpha: 0.1)
+              : const Color(0xFFFBFCFF),
+          borderRadius: BorderRadius.circular(10),
           border: Border.all(color: selected ? color : AppColors.border),
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-              color: selected ? color : AppColors.muted,
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x080F172A),
+              blurRadius: 10,
+              offset: Offset(0, 4),
             ),
-          ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: selected ? Colors.white : Colors.transparent,
+                borderRadius: BorderRadius.circular(11),
+                border: Border.all(
+                  color: selected
+                      ? color.withValues(alpha: 0.35)
+                      : AppColors.border,
+                ),
+              ),
+              child: Icon(
+                icon,
+                size: 18,
+                color: selected ? color : AppColors.muted,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: selected ? color : AppColors.muted,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelSmall?.copyWith(color: AppColors.muted2),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
