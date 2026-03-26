@@ -1,7 +1,8 @@
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 
@@ -119,7 +120,10 @@ app.post('/api/report', async (req, res) => {
     res.json({ success: true, id: report._id.toString() });
   } catch (err) {
     console.error('Report error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : 'Server error',
+    });
   }
 });
 
@@ -134,7 +138,10 @@ app.post('/api/panic', async (req, res) => {
     res.json({ success: true, id: panic._id.toString() });
   } catch (err) {
     console.error('Panic error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : 'Server error',
+    });
   }
 });
 
@@ -160,7 +167,10 @@ app.get('/api/alerts/latest', async (_req, res) => {
     });
   } catch (err) {
     console.error('Latest alert error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : 'Server error',
+    });
   }
 });
 
@@ -185,7 +195,10 @@ app.get('/api/alerts', async (req, res) => {
     });
   } catch (err) {
     console.error('List alerts error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : 'Server error',
+    });
   }
 });
 
@@ -235,7 +248,10 @@ app.post('/api/alerts', async (req, res) => {
     });
   } catch (err) {
     console.error('Create alert error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : 'Server error',
+    });
   }
 });
 
@@ -282,7 +298,10 @@ app.patch('/api/alerts/:id', async (req, res) => {
     });
   } catch (err) {
     console.error('Update alert error:', err);
-    res.status(500).json({ success: false, error: 'Server error' });
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : 'Server error',
+    });
   }
 });
 
