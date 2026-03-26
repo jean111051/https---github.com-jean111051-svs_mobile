@@ -85,33 +85,33 @@ class SvsApp extends StatelessWidget {
 }
 
 class AppColors {
-  static const amber = Color(0xFFF4C95D);
-  static const amberDark = Color(0xFFE7B449);
-  static const amberDeep = Color(0xFFC08924);
-  static const amberLight = Color(0xFFFFF3D6);
-  static const amberBorder = Color(0xFFF8DC98);
-  static const orange = Color(0xFFEA6A5A);
-  static const orangeLight = Color(0xFFFFECE8);
-  static const orangeBorder = Color(0xFFFFD1C9);
-  static const red = Color(0xFFE33B3B);
-  static const redLight = Color(0xFFFFE8E8);
-  static const redBorder = Color(0xFFFFCACA);
-  static const green = Color(0xFF2D6AE3);
-  static const greenLight = Color(0xFFE3ECFF);
-  static const greenBorder = Color(0xFFBFD4FF);
-  static const blue = Color(0xFF1F4BB8);
+  static const amber = Color(0xFFFACC15);
+  static const amberDark = Color(0xFFEAB308);
+  static const amberDeep = Color(0xFFCA8A04);
+  static const amberLight = Color(0xFFFEFCE8);
+  static const amberBorder = Color(0xFFFDE047);
+  static const orange = Color(0xFFDC2626);
+  static const orangeLight = Color(0xFFFEF2F2);
+  static const orangeBorder = Color(0xFFFCA5A5);
+  static const red = Color(0xFFDC2626);
+  static const redLight = Color(0xFFFEF2F2);
+  static const redBorder = Color(0xFFFCA5A5);
+  static const green = Color(0xFF2563EB);
+  static const greenLight = Color(0xFFDBEAFE);
+  static const greenBorder = Color(0xFF93C5FD);
+  static const blue = Color(0xFF1D4ED8);
   static const navBg = Color(0xFFFFFFFF);
-  static const navSelected = Color(0xFF1F4BB8);
-  static const navUnselected = Color(0xFF7E8FA8);
+  static const navSelected = Color(0xFF1D4ED8);
+  static const navUnselected = Color(0xFF64748B);
   static const bg = Color(0xFFF5F7FF);
-  static const bgSoft = Color(0xFF1F3560);
+  static const bgSoft = Color(0xFF1E3A8A);
   static const surface = Color(0xFFF4F8FF);
-  static const border = Color(0xFFD9E3F2);
-  static const borderMid = Color(0xFFBFD0EA);
-  static const text = Color(0xFF0E1A2B);
-  static const text2 = Color(0xFF1F3560);
-  static const muted = Color(0xFF5D6D86);
-  static const muted2 = Color(0xFF7E8FA8);
+  static const border = Color(0xFFBFD6F5);
+  static const borderMid = Color(0xFF97BDE9);
+  static const text = Color(0xFF0F172A);
+  static const text2 = Color(0xFF1E3A8A);
+  static const muted = Color(0xFF334155);
+  static const muted2 = Color(0xFF64748B);
 }
 
 class AdminAlert {
@@ -123,6 +123,7 @@ class AdminAlert {
     required this.severity,
     required this.active,
     this.createdAt,
+    this.updatedAt,
   });
 
   final String id;
@@ -132,6 +133,7 @@ class AdminAlert {
   final String severity;
   final bool active;
   final DateTime? createdAt;
+  final DateTime? updatedAt;
 
   factory AdminAlert.fromJson(Map<String, dynamic> json) {
     return AdminAlert(
@@ -145,6 +147,9 @@ class AdminAlert {
       active: (json['active'] ?? json['is_active']) != false,
       createdAt: DateTime.tryParse(
         (json['createdAt'] ?? json['created_at'] ?? '').toString(),
+      ),
+      updatedAt: DateTime.tryParse(
+        (json['updatedAt'] ?? json['updated_at'] ?? '').toString(),
       ),
     );
   }
@@ -206,6 +211,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   String _baseUrl = 'https://svsmdrrmo.vercel.app';
   static const String _queuedReportsKey = 'queued_reports';
   static const String _lastSeenAlertIdKey = 'last_seen_alert_id';
+  static const String _dismissedAlertFingerprintsKey =
+      'dismissed_alert_fingerprints';
   static const Duration _alertPollInterval = Duration(seconds: 5);
 
   static const String _baseUrlEnv = String.fromEnvironment(
@@ -222,6 +229,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       dotenv.env['SUPABASE_ALERTS_TABLE'] ?? 'admin_alerts';
   Timer? _alertPollingTimer;
   String? _lastSeenAlertId;
+  final Set<String> _dismissedAlertFingerprints = <String>{};
   AdminAlert? _activeAlert;
   String _alertDebugStatus = 'idle';
   String _alertDebugSource = '-';
@@ -274,10 +282,15 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     final panicNum = prefs.getString('panic_number');
     final baseUrl = prefs.getString('base_url');
     final lastSeenAlertId = prefs.getString(_lastSeenAlertIdKey);
+    final dismissedAlertFingerprints =
+        prefs.getStringList(_dismissedAlertFingerprintsKey) ?? <String>[];
     setState(() {
       _panicNumber = panicNum;
       _panicCtrl.text = _formatPhMobile(_panicNumber);
       _lastSeenAlertId = lastSeenAlertId;
+      _dismissedAlertFingerprints
+        ..clear()
+        ..addAll(dismissedAlertFingerprints);
       if (baseUrl != null && baseUrl.trim().isNotEmpty) {
         _baseUrl = baseUrl.trim();
       }
@@ -1076,6 +1089,17 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _showQueuedReportsInfo() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList(_queuedReportsKey) ?? <String>[];
+    if (!mounted) return;
+    _toast(
+      list.isEmpty
+          ? 'No queued reports right now.'
+          : '${list.length} queued report${list.length == 1 ? '' : 's'} waiting to resend.',
+    );
+  }
+
   Future<String?> _tryGetLiveGps() async {
     try {
       final permission = await _ensureLocationPermission();
@@ -1486,8 +1510,28 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     _lastSeenAlertId = id;
   }
 
+  Future<void> _saveDismissedAlertFingerprint(String fingerprint) async {
+    final prefs = await SharedPreferences.getInstance();
+    _dismissedAlertFingerprints.add(fingerprint);
+    await prefs.setStringList(
+      _dismissedAlertFingerprintsKey,
+      _dismissedAlertFingerprints.toList(),
+    );
+  }
+
+  Future<void> _dismissActiveAlert(AdminAlert alert) async {
+    final fingerprint = _alertDismissFingerprint(alert);
+    final versionKey = _alertVersionKey(alert);
+    await _saveDismissedAlertFingerprint(fingerprint);
+    await _saveLastSeenAlertId(versionKey);
+    if (!mounted) return;
+    setState(() {
+      _activeAlert = null;
+    });
+  }
+
   Future<void> _primeAdminAlerts() async {
-    await _checkForAdminAlerts(notifyOnNew: false);
+    await _checkForAdminAlerts(notifyOnNew: true);
   }
 
   Future<void> _consumeAdminAlert(
@@ -1501,13 +1545,23 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       return;
     }
 
-    final isNewAlert = alert.id != _lastSeenAlertId;
+    final versionKey = _alertVersionKey(alert);
+    final fingerprint = _alertDismissFingerprint(alert);
+    if (_dismissedAlertFingerprints.contains(fingerprint)) {
+      if (mounted && _activeAlert != null) {
+        setState(() => _activeAlert = null);
+      }
+      await _saveLastSeenAlertId(versionKey);
+      return;
+    }
+
+    final isNewAlert = versionKey != _lastSeenAlertId;
     if (mounted) {
       setState(() => _activeAlert = alert);
     }
 
     if (isNewAlert) {
-      await _saveLastSeenAlertId(alert.id);
+      await _saveLastSeenAlertId(versionKey);
       if (notifyOnNew) {
         await _showAdminAlertNotification(alert);
         await _presentAdminAlert(alert);
@@ -1587,22 +1641,35 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         ? 'admin_alerts'
         : _supabaseAlertsTableEnv.trim();
     final baseUrl = _normalizedSupabaseUrl(_supabaseUrlEnv);
-    final url = Uri.parse(
-      '$baseUrl/rest/v1/${Uri.encodeComponent(table)}'
-      '?select=source_id,title,message,disaster_type,severity,active,sent_by,created_at'
-      '&active=eq.true'
-      '&order=created_at.desc'
-      '&limit=1',
+    Future<http.Response> fetchWithSelect(String select) {
+      final url = Uri.parse(
+        '$baseUrl/rest/v1/${Uri.encodeComponent(table)}'
+        '?select=$select'
+        '&active=eq.true'
+        '&order=created_at.desc'
+        '&limit=1',
+      );
+      return http
+          .get(
+            url,
+            headers: {
+              'Authorization': 'Bearer $_supabaseAnonKeyEnv',
+              'apikey': _supabaseAnonKeyEnv,
+            },
+          )
+          .timeout(const Duration(seconds: 10));
+    }
+
+    var res = await fetchWithSelect(
+      'source_id,title,message,disaster_type,severity,active,sent_by,created_at,updated_at',
     );
-    final res = await http
-        .get(
-          url,
-          headers: {
-            'Authorization': 'Bearer $_supabaseAnonKeyEnv',
-            'apikey': _supabaseAnonKeyEnv,
-          },
-        )
-        .timeout(const Duration(seconds: 10));
+
+    if (res.statusCode == 400 && res.body.contains('updated_at')) {
+      res = await fetchWithSelect(
+        'source_id,title,message,disaster_type,severity,active,sent_by,created_at',
+      );
+    }
+
     if (res.statusCode != 200) {
       debugPrint('[alerts] supabase status=${res.statusCode} body=${res.body}');
       return null;
@@ -1610,6 +1677,34 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     final data = jsonDecode(res.body);
     if (data is! List || data.isEmpty || data.first is! Map) return null;
     return AdminAlert.fromJson((data.first as Map).cast<String, dynamic>());
+  }
+
+  String _alertVersionKey(AdminAlert alert) {
+    final timestamp =
+        alert.updatedAt?.toIso8601String() ??
+        alert.createdAt?.toIso8601String() ??
+        '';
+    return '${alert.id}|$timestamp|${alert.active}';
+  }
+
+  String _alertDismissFingerprint(AdminAlert alert) {
+    String normalize(String value) {
+      return value
+          .toLowerCase()
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+    }
+
+    final normalizedTitle = normalize(alert.title);
+    final normalizedMessage = normalize(alert.message);
+    final normalizedType = normalize(alert.disasterType);
+    final normalizedSeverity = normalize(alert.severity);
+    return [
+      normalizedTitle,
+      normalizedMessage,
+      normalizedType,
+      normalizedSeverity,
+    ].join('|');
   }
 
   Future<void> _triggerTestAlert() async {
@@ -1802,7 +1897,12 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
-                      onPressed: () => Navigator.of(ctx).pop(),
+                      onPressed: () async {
+                        await _dismissActiveAlert(alert);
+                        if (ctx.mounted) {
+                          Navigator.of(ctx).pop();
+                        }
+                      },
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.red,
                         padding: const EdgeInsets.symmetric(vertical: 14),
@@ -3450,73 +3550,181 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   }
 
   Widget _buildHeader() {
+    final now = DateTime.now();
+    final hour = now.hour % 12 == 0 ? 12 : now.hour % 12;
+    final minute = now.minute.toString().padLeft(2, '0');
+    final suffix = now.hour >= 12 ? 'PM' : 'AM';
+    const weekdayNames = [
+      'Mon',
+      'Tue',
+      'Wed',
+      'Thu',
+      'Fri',
+      'Sat',
+      'Sun',
+    ];
+    const monthNames = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final dateLabel =
+        '${weekdayNames[now.weekday - 1]}, ${monthNames[now.month - 1]} ${now.day}';
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xCCFFFFFF),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.border.withValues(alpha: 0.85)),
+          color: const Color(0xE6F3F7FF),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.border.withValues(alpha: 0.92)),
           boxShadow: const [
             BoxShadow(
-              color: Color(0x120F172A),
-              blurRadius: 20,
+              color: Color(0x140F172A),
+              blurRadius: 24,
               offset: Offset(0, 8),
             ),
           ],
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
-            children: [
-              Container(
-                width: 52,
-                height: 52,
-                padding: const EdgeInsets.all(5),
-                decoration: BoxDecoration(
-                  color: AppColors.bg,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: Image.asset('assets/svs-logo.png', fit: BoxFit.cover),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'SVS',
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: AppColors.text,
-                        fontWeight: FontWeight.w900,
-                        height: 1,
-                      ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 760;
+              return Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                alignment: WrapAlignment.spaceBetween,
+                runSpacing: 12,
+                spacing: 12,
+                children: [
+                  SizedBox(
+                    width: compact ? constraints.maxWidth : null,
+                    child: Row(
+                      mainAxisSize: compact ? MainAxisSize.max : MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 56,
+                          height: 56,
+                          padding: const EdgeInsets.all(5),
+                          decoration: BoxDecoration(
+                            color: AppColors.bg,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: AppColors.border),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.asset(
+                              'assets/svs-logo.png',
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                'SVS',
+                                style: Theme.of(context).textTheme.titleLarge
+                                    ?.copyWith(
+                                      color: AppColors.text,
+                                      fontWeight: FontWeight.w900,
+                                      height: 1,
+                                    ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Smart Verification System',
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(
+                                      color: AppColors.text2,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Verified emergency reporting and SOS.',
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(
+                                      color: AppColors.muted,
+                                      height: 1.35,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'Smart Verification System',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: AppColors.text2,
-                        fontWeight: FontWeight.w600,
-                      ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Verified emergency reporting and SOS.',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppColors.muted,
-                        height: 1.35,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Colors.white, Color(0xFFEEF3FF)],
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
                       ),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: AppColors.borderMid),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x140F172A),
+                          blurRadius: 16,
+                          offset: Offset(0, 8),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-            ],
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.schedule_rounded,
+                          color: AppColors.blue,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 10),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              '$hour:$minute $suffix',
+                              style: GoogleFonts.orbitron(
+                                color: AppColors.text,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 15,
+                              ),
+                            ),
+                            Text(
+                              dateLabel,
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: AppColors.muted2,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.7,
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -3701,386 +3909,487 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 860),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildTitleSection(),
-                const SizedBox(height: 16),
-                _buildAlertStrip(),
-                if (kDebugMode && _showReporterDebugPanels) ...[
-                  const SizedBox(height: 12),
-                  _buildAlertDebugPanel(),
-                ],
-                if (kDebugMode && _showReporterDebugPanels) ...[
-                  const SizedBox(height: 12),
-                  _buildSupabaseDebug(),
-                ],
-                const SizedBox(height: 18),
-                _buildCard(
-                  step: 'Step 01',
-                  title: 'Reporter details',
-                  subtitle:
-                      'Who is making this report and how can dispatch call back?',
-                  icon: Icons.badge_outlined,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final wide = constraints.maxWidth >= 620;
-                      return wide
-                          ? Row(
-                              children: [
-                                Expanded(
-                                  child: _textField(
-                                    controller: _nameCtrl,
-                                    label: 'Full name',
-                                    hint: 'Juan dela Cruz',
-                                    validator: (v) =>
-                                        v == null || v.trim().isEmpty
-                                        ? 'Required'
-                                        : null,
-                                  ),
-                                ),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: _textField(
-                                    controller: _contactCtrl,
-                                    label: 'Contact number',
-                                    hint: '917 123 4567',
-                                    keyboardType: TextInputType.phone,
-                                    validator: (v) =>
-                                        v == null || v.trim().isEmpty
-                                        ? 'Required'
-                                        : null,
-                                    prefixText: '+63 ',
-                                  ),
-                                ),
-                              ],
-                            )
-                          : Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                _textField(
-                                  controller: _nameCtrl,
-                                  label: 'Full name',
-                                  hint: 'Juan dela Cruz',
-                                  validator: (v) =>
-                                      v == null || v.trim().isEmpty
-                                      ? 'Required'
-                                      : null,
-                                ),
-                                const SizedBox(height: 14),
-                                _textField(
-                                  controller: _contactCtrl,
-                                  label: 'Contact number',
-                                  hint: '917 123 4567',
-                                  keyboardType: TextInputType.phone,
-                                  validator: (v) =>
-                                      v == null || v.trim().isEmpty
-                                      ? 'Required'
-                                      : null,
-                                  prefixText: '+63 ',
-                                ),
-                              ],
-                            );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 14),
-                _buildCard(
-                  step: 'Step 02',
-                  title: 'Emergency type',
-                  subtitle: 'Choose the closest category for the incident.',
-                  icon: Icons.emergency_outlined,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final columns = constraints.maxWidth >= 680 ? 3 : 2;
-                      const spacing = 12.0;
-                      final width =
-                          (constraints.maxWidth - (spacing * (columns - 1))) /
-                          columns;
-                      return Wrap(
-                        spacing: spacing,
-                        runSpacing: spacing,
-                        children: _types.map((type) {
-                          final meta = _emergencyTypeMeta(type);
-                          return SizedBox(
-                            width: width,
-                            child: _SelectChip(
-                              label: type,
-                              subtitle: meta.$1,
-                              icon: meta.$2,
-                              selected: _selectedType == type,
-                              onTap: () => setState(() => _selectedType = type),
-                            ),
-                          );
-                        }).toList(),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 14),
-                _buildCard(
-                  step: 'Step 03',
-                  title: 'Severity level',
-                  subtitle:
-                      'Tell responders how urgent the situation is right now.',
-                  icon: Icons.priority_high_rounded,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final wide = constraints.maxWidth >= 560;
-                      return wide
-                          ? Row(
-                              children: [
-                                Expanded(
-                                  child: _SeverityButton(
-                                    label: 'Low',
-                                    subtitle: 'Needs attention',
-                                    icon: Icons.shield_outlined,
-                                    color: AppColors.green,
-                                    selected: _selectedSeverity == 'Low',
-                                    onTap: () => setState(
-                                      () => _selectedSeverity = 'Low',
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: _SeverityButton(
-                                    label: 'Medium',
-                                    subtitle: 'Response needed',
-                                    icon: Icons.report_problem_outlined,
-                                    color: AppColors.amberDark,
-                                    selected: _selectedSeverity == 'Medium',
-                                    onTap: () => setState(
-                                      () => _selectedSeverity = 'Medium',
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: _SeverityButton(
-                                    label: 'High',
-                                    subtitle: 'Immediate danger',
-                                    icon: Icons.warning_amber_rounded,
-                                    color: AppColors.red,
-                                    selected: _selectedSeverity == 'High',
-                                    onTap: () => setState(
-                                      () => _selectedSeverity = 'High',
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            )
-                          : Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                _SeverityButton(
-                                  label: 'Low',
-                                  subtitle: 'Needs attention',
-                                  icon: Icons.shield_outlined,
-                                  color: AppColors.green,
-                                  selected: _selectedSeverity == 'Low',
-                                  onTap: () =>
-                                      setState(() => _selectedSeverity = 'Low'),
-                                ),
-                                const SizedBox(height: 12),
-                                _SeverityButton(
-                                  label: 'Medium',
-                                  subtitle: 'Response needed',
-                                  icon: Icons.report_problem_outlined,
-                                  color: AppColors.amberDark,
-                                  selected: _selectedSeverity == 'Medium',
-                                  onTap: () => setState(
-                                    () => _selectedSeverity = 'Medium',
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-                                _SeverityButton(
-                                  label: 'High',
-                                  subtitle: 'Immediate danger',
-                                  icon: Icons.warning_amber_rounded,
-                                  color: AppColors.red,
-                                  selected: _selectedSeverity == 'High',
-                                  onTap: () => setState(
-                                    () => _selectedSeverity = 'High',
-                                  ),
-                                ),
-                              ],
-                            );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 14),
-                _buildCard(
-                  step: 'Step 04',
-                  title: 'Location',
-                  subtitle:
-                      'Share the exact place so responders can reach you faster.',
-                  icon: Icons.location_on_outlined,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      FilledButton.icon(
-                        onPressed: _detectingGps ? null : _detectGps,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFFE9F2FF),
-                          foregroundColor: AppColors.blue,
-                          elevation: 0,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            side: const BorderSide(color: AppColors.borderMid),
-                          ),
-                        ),
-                        icon: _detectingGps
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.gps_fixed_rounded),
-                        label: Text(
-                          _gps == null
-                              ? 'Detect my location'
-                              : 'Detected: $_gps (+/-${_gpsAccuracy ?? 0}m)',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      if (_showMap && _mapLat != null && _mapLng != null)
-                        _buildLocationMap(_mapLat!, _mapLng!)
-                      else
-                        _buildMapPlaceholder(),
-                      const SizedBox(height: 14),
-                      LayoutBuilder(
-                        builder: (context, constraints) {
-                          final wide = constraints.maxWidth >= 620;
-                          return wide
-                              ? Row(
-                                  children: [
-                                    Expanded(
-                                      child: _textField(
-                                        controller: _barangayCtrl,
-                                        label: 'Barangay',
-                                        hint: 'Barangay Rizal',
-                                        validator: (v) =>
-                                            v == null || v.trim().isEmpty
-                                            ? 'Required'
-                                            : null,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 14),
-                                    Expanded(
-                                      child: _textField(
-                                        controller: _landmarkCtrl,
-                                        label: 'Nearest landmark',
-                                        hint: 'Near Municipal Hall',
-                                        validator: (v) =>
-                                            v == null || v.trim().isEmpty
-                                            ? 'Required'
-                                            : null,
-                                      ),
-                                    ),
-                                  ],
-                                )
-                              : Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    _textField(
-                                      controller: _barangayCtrl,
-                                      label: 'Barangay',
-                                      hint: 'Barangay Rizal',
-                                      validator: (v) =>
-                                          v == null || v.trim().isEmpty
-                                          ? 'Required'
-                                          : null,
-                                    ),
-                                    const SizedBox(height: 14),
-                                    _textField(
-                                      controller: _landmarkCtrl,
-                                      label: 'Nearest landmark',
-                                      hint: 'Near Municipal Hall',
-                                      validator: (v) =>
-                                          v == null || v.trim().isEmpty
-                                          ? 'Required'
-                                          : null,
-                                    ),
-                                  ],
-                                );
-                        },
-                      ),
-                      const SizedBox(height: 14),
-                      _textField(
-                        controller: _streetCtrl,
-                        label: 'Street / additional details',
-                        hint: 'Street name, purok, or access notes',
-                        validator: (v) =>
-                            v == null || v.trim().isEmpty ? 'Required' : null,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-                _buildCard(
-                  step: 'Step 05',
-                  title: 'Incident details',
-                  subtitle:
-                      'Describe what is happening and attach a photo if possible.',
-                  icon: Icons.description_outlined,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _textField(
-                        controller: _descCtrl,
-                        label: 'Description',
-                        hint:
-                            'Describe what is happening, how many people are affected, and visible hazards.',
-                        maxLines: 5,
-                        validator: (v) =>
-                            v == null || v.trim().isEmpty ? 'Required' : null,
-                      ),
-                      const SizedBox(height: 14),
-                      _buildPhotoPicker(),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 18),
-                FilledButton.icon(
-                  onPressed: _submitting ? null : _submitReport,
-                  icon: _submitting
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.send_rounded),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.red,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
+          constraints: const BoxConstraints(maxWidth: 1280),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 1080;
+              final formPanel = Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.92),
+                  borderRadius: BorderRadius.circular(30),
+                  border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x140F172A),
+                      blurRadius: 30,
+                      offset: Offset(0, 18),
                     ),
-                    textStyle: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: 15,
+                  ],
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildTitleSection(),
+                        const SizedBox(height: 16),
+                        _buildAlertStrip(),
+                        if (kDebugMode && _showReporterDebugPanels) ...[
+                          const SizedBox(height: 12),
+                          _buildAlertDebugPanel(),
+                        ],
+                        if (kDebugMode && _showReporterDebugPanels) ...[
+                          const SizedBox(height: 12),
+                          _buildSupabaseDebug(),
+                        ],
+                        const SizedBox(height: 16),
+                        _buildReportDetailsCard(),
+                        const SizedBox(height: 14),
+                        _buildEmergencyTypeCard(),
+                        const SizedBox(height: 14),
+                        _buildSeverityCard(),
+                        const SizedBox(height: 14),
+                        _buildLocationCard(showInlineMap: !wide),
+                        const SizedBox(height: 14),
+                        _buildIncidentDetailsCard(),
+                        const SizedBox(height: 16),
+                        _buildSubmitPanel(),
+                      ],
                     ),
                   ),
-                  label: Text(
-                    _submitting
-                        ? 'Submitting emergency report...'
-                        : 'Submit emergency report',
-                  ),
                 ),
-              ],
-            ),
+              );
+
+              if (!wide) return formPanel;
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 10, child: formPanel),
+                  const SizedBox(width: 20),
+                  SizedBox(width: 360, child: _buildReportAside()),
+                ],
+              );
+            },
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildReportDetailsCard() {
+    return _buildCard(
+      step: 'Step 01',
+      title: 'Your Information',
+      subtitle: 'Who is making this report?',
+      badge: 'Required',
+      icon: Icons.badge_outlined,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = constraints.maxWidth >= 620;
+          final nameField = _textField(
+            controller: _nameCtrl,
+            label: 'Full name',
+            hint: 'Juan dela Cruz',
+            validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+            icon: Icons.person_outline,
+            note:
+                'Use the name responders can ask for during verification.',
+          );
+          final contactField = _textField(
+            controller: _contactCtrl,
+            label: 'Contact number',
+            hint: '917 123 4567',
+            keyboardType: TextInputType.phone,
+            validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+            prefixText: '+63 ',
+            icon: Icons.call_outlined,
+            note:
+                'Use an active PH mobile number so dispatchers can call or text back immediately.',
+          );
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              wide
+                  ? Row(
+                      children: [
+                        Expanded(child: nameField),
+                        const SizedBox(width: 14),
+                        Expanded(child: contactField),
+                      ],
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        nameField,
+                        const SizedBox(height: 14),
+                        contactField,
+                      ],
+                    ),
+              const SizedBox(height: 14),
+              _buildPanicNumberInline(),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildEmergencyTypeCard() {
+    return _buildCard(
+      step: 'Step 02',
+      title: 'Type of Emergency',
+      subtitle: 'Select the category that best describes the incident.',
+      badge: 'Choose one',
+      icon: Icons.emergency_outlined,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final columns = constraints.maxWidth >= 680 ? 3 : 2;
+          const spacing = 12.0;
+          final width =
+              (constraints.maxWidth - (spacing * (columns - 1))) / columns;
+          return Wrap(
+            spacing: spacing,
+            runSpacing: spacing,
+            children: _types.map((type) {
+              final meta = _emergencyTypeMeta(type);
+              return SizedBox(
+                width: width,
+                child: _SelectChip(
+                  label: type,
+                  subtitle: meta.$1,
+                  icon: meta.$2,
+                  selected: _selectedType == type,
+                  onTap: () => setState(() => _selectedType = type),
+                ),
+              );
+            }).toList(),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSeverityCard() {
+    return _buildCard(
+      step: 'Step 03',
+      title: 'Severity Level',
+      subtitle: 'How serious is the situation right now?',
+      badge: 'Priority',
+      icon: Icons.flash_on_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 560;
+              final low = _SeverityButton(
+                label: 'Low',
+                subtitle: 'Stable incident',
+                icon: Icons.verified_outlined,
+                color: AppColors.green,
+                selected: _selectedSeverity == 'Low',
+                onTap: () => setState(() => _selectedSeverity = 'Low'),
+              );
+              final medium = _SeverityButton(
+                label: 'Medium',
+                subtitle: 'Urgent response',
+                icon: Icons.report_problem_outlined,
+                color: AppColors.amberDark,
+                selected: _selectedSeverity == 'Medium',
+                onTap: () => setState(() => _selectedSeverity = 'Medium'),
+              );
+              final high = _SeverityButton(
+                label: 'High',
+                subtitle: 'Immediate danger',
+                icon: Icons.warning_amber_rounded,
+                color: AppColors.red,
+                selected: _selectedSeverity == 'High',
+                onTap: () => setState(() => _selectedSeverity = 'High'),
+              );
+              return wide
+                  ? Row(
+                      children: [
+                        Expanded(child: low),
+                        const SizedBox(width: 12),
+                        Expanded(child: medium),
+                        const SizedBox(width: 12),
+                        Expanded(child: high),
+                      ],
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        low,
+                        const SizedBox(height: 12),
+                        medium,
+                        const SizedBox(height: 12),
+                        high,
+                      ],
+                    );
+            },
+          ),
+          const SizedBox(height: 12),
+          _buildSeverityGuide(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocationCard({required bool showInlineMap}) {
+    return _buildCard(
+      step: 'Step 04',
+      title: 'Location',
+      subtitle: 'Where is the emergency happening?',
+      badge: 'GPS first',
+      icon: Icons.location_on_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          FilledButton.icon(
+            onPressed: _detectingGps ? null : _detectGps,
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFF8FBFF),
+              foregroundColor: AppColors.text2,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(
+                  color: AppColors.borderMid,
+                  width: 1.5,
+                ),
+              ),
+            ),
+            icon: _detectingGps
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.gps_fixed_rounded),
+            label: Text(
+              _gps == null
+                  ? 'Auto-detect my location (GPS)'
+                  : 'Detected: $_gps (+/-${_gpsAccuracy ?? 0}m)',
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildMapCallout(),
+          if (showInlineMap) ...[
+            const SizedBox(height: 12),
+            if (_showMap && _mapLat != null && _mapLng != null)
+              _buildLocationMap(_mapLat!, _mapLng!)
+            else
+              _buildMapPlaceholder(),
+          ],
+          const SizedBox(height: 14),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 620;
+              final barangay = _textField(
+                controller: _barangayCtrl,
+                label: 'Barangay',
+                hint: 'Barangay Rizal',
+                validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+                icon: Icons.location_city_outlined,
+                note:
+                    'Keep this specific so responders can route the report to the correct area.',
+              );
+              final landmark = _textField(
+                controller: _landmarkCtrl,
+                label: 'Nearest landmark',
+                hint: 'Near Municipal Hall',
+                validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+                icon: Icons.place_outlined,
+                note:
+                    'Use a building, crossing, school, bridge, or any place responders can spot quickly.',
+              );
+              return wide
+                  ? Row(
+                      children: [
+                        Expanded(child: barangay),
+                        const SizedBox(width: 14),
+                        Expanded(child: landmark),
+                      ],
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        barangay,
+                        const SizedBox(height: 14),
+                        landmark,
+                      ],
+                    );
+            },
+          ),
+          const SizedBox(height: 14),
+          _textField(
+            controller: _streetCtrl,
+            label: 'Street / additional details',
+            hint: 'Street name, purok, or access notes',
+            validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+            icon: Icons.menu_rounded,
+            note:
+                'Include purok, road direction, blocked access, or any detail that helps the team approach safely.',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIncidentDetailsCard() {
+    return _buildCard(
+      step: 'Step 05',
+      title: 'Incident Details',
+      subtitle: 'Describe the situation and attach a photo if possible.',
+      badge: 'Context',
+      icon: Icons.edit_note_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _textField(
+            controller: _descCtrl,
+            label: 'Description',
+            hint:
+                'Describe what is happening, how many people are affected, and visible hazards.',
+            maxLines: 5,
+            validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+            note:
+                'Helpful details: injuries, trapped people, hazards, flood depth, fire spread, or anything changing fast.',
+          ),
+          const SizedBox(height: 14),
+          _buildPhotoPicker(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSubmitPanel() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xF2FFFFFF), Color(0xFFEEF5FF)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x120F172A),
+            blurRadius: 20,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 540;
+              final copy = Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Ready to send the report?',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.text,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Check that your contact number, severity, and location are correct before final submission.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppColors.muted,
+                      height: 1.55,
+                    ),
+                  ),
+                ],
+              );
+              final pill = Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.amberLight,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: AppColors.amberBorder),
+                ),
+                child: Text(
+                  'Required fields only',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: AppColors.amberDeep,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1,
+                  ),
+                ),
+              );
+              return compact
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        copy,
+                        const SizedBox(height: 10),
+                        pill,
+                      ],
+                    )
+                  : Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(child: copy),
+                        const SizedBox(width: 12),
+                        pill,
+                      ],
+                    );
+            },
+          ),
+          const SizedBox(height: 14),
+          Align(
+            alignment: Alignment.center,
+            child: FilledButton.icon(
+              onPressed: _submitting ? null : _submitReport,
+              icon: _submitting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  : const Icon(Icons.send_rounded, size: 18),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.red,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 14,
+                ),
+                minimumSize: const Size(0, 52),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                textStyle: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12.5,
+                  height: 1,
+                ),
+              ),
+              label: Text(
+                _submitting
+                    ? 'Submitting emergency report...'
+                    : 'Submit emergency report',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -4280,15 +4589,22 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
 
   Widget _buildMapPlaceholder() {
     return Container(
-      height: 220,
+      height: 260,
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFFEAF2FF), Color(0xFFFFF7E6)],
+          colors: [Color(0xFFDCEAFE), Color(0xFFF8FAFC)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.borderMid),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.borderMid, width: 1.5),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x120F172A),
+            blurRadius: 18,
+            offset: Offset(0, 10),
+          ),
+        ],
       ),
       child: Center(
         child: Padding(
@@ -4297,11 +4613,11 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
-                width: 58,
-                height: 58,
+                width: 64,
+                height: 64,
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(18),
+                  borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: AppColors.border),
                 ),
                 child: const Icon(
@@ -4315,15 +4631,18 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 'Map preview will appear here',
                 style: Theme.of(
                   context,
-                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+                ).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.text,
+                ),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 6),
               Text(
-                'Use GPS detection to pin the incident and automatically help fill the location fields.',
+                'Use GPS detection to pin the incident and confirm the scene before sending the report.',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: AppColors.text2,
-                  height: 1.5,
+                  height: 1.6,
                 ),
                 textAlign: TextAlign.center,
               ),
@@ -4334,12 +4653,537 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildPanicNumberInline() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.75),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        runSpacing: 10,
+        spacing: 10,
+        children: [
+          Text(
+            'SOS number',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppColors.text2,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          SizedBox(
+            width: 190,
+            child: TextField(
+              controller: _panicCtrl,
+              keyboardType: TextInputType.phone,
+              decoration: InputDecoration(
+                hintText: '+63 9XX XXX XXXX',
+                isDense: true,
+                filled: true,
+                fillColor: Colors.white,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: AppColors.borderMid),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: AppColors.blue),
+                ),
+              ),
+            ),
+          ),
+          FilledButton(
+            onPressed: _savePanicNumber,
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.blue,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text('Save SOS'),
+          ),
+          Text(
+            _panicNumber == null
+                ? 'No saved SOS number yet'
+                : 'Saved: ${_formatPhMobile(_panicNumber)}',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: AppColors.muted,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSeverityGuide() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 620;
+        final items = [
+          _buildSeverityNote(
+            title: 'Low',
+            body:
+                'Stable incident, no immediate life threat, responders can approach normally.',
+            color: AppColors.green,
+          ),
+          _buildSeverityNote(
+            title: 'Medium',
+            body:
+                'Urgent situation with possible escalation or people needing prompt assistance.',
+            color: AppColors.amberDark,
+          ),
+          _buildSeverityNote(
+            title: 'High',
+            body:
+                'Immediate danger to life, active hazard, trapped victims, or rapidly worsening conditions.',
+            color: AppColors.red,
+          ),
+        ];
+        return wide
+            ? Row(
+                children: [
+                  Expanded(child: items[0]),
+                  const SizedBox(width: 10),
+                  Expanded(child: items[1]),
+                  const SizedBox(width: 10),
+                  Expanded(child: items[2]),
+                ],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  items[0],
+                  const SizedBox(height: 10),
+                  items[1],
+                  const SizedBox(height: 10),
+                  items[2],
+                ],
+              );
+      },
+    );
+  }
+
+  Widget _buildSeverityNote({
+    required String title,
+    required String body,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.74),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            body,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: AppColors.muted,
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMapCallout() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFDCEAFE), Color(0xF8FFFFFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.greenBorder),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.pin_drop_outlined, color: AppColors.blue, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Use the map as a confirmation step',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.text,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'After GPS detection, check whether the pin matches the actual incident scene. If it looks off, update the barangay, landmark, and street fields manually.',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: AppColors.muted,
+                    height: 1.55,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIntroCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Widget child,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.78),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.border),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x100F172A),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: AppColors.greenLight,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.greenBorder),
+                ),
+                child: Icon(icon, color: AppColors.blue, size: 18),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.text,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: AppColors.muted2,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMiniPoint({required String title, required String body}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          margin: const EdgeInsets.only(top: 5),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const LinearGradient(
+              colors: [AppColors.amber, AppColors.orange],
+            ),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x33FACC15),
+                blurRadius: 8,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: RichText(
+            text: TextSpan(
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: AppColors.muted,
+                height: 1.55,
+              ),
+              children: [
+                TextSpan(
+                  text: '$title: ',
+                  style: const TextStyle(
+                    color: AppColors.text2,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                TextSpan(text: body),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildReportAside() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildReportAsideCard(
+          kicker: 'Report Flow',
+          title: 'Follow the same sequence as report.ejs',
+          body:
+              'Complete reporter info first, confirm category and severity, then verify the map pin before sending.',
+          child: Column(
+            children: [
+              _buildStepLink('01', 'Reporter details'),
+              const SizedBox(height: 10),
+              _buildStepLink('02', 'Emergency type'),
+              const SizedBox(height: 10),
+              _buildStepLink('03', 'Severity level'),
+              const SizedBox(height: 10),
+              _buildStepLink('04', 'Location'),
+              const SizedBox(height: 10),
+              _buildStepLink('05', 'Incident details'),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildReportAsideCard(
+          kicker: 'Live Map',
+          title: _showMap && _mapLat != null && _mapLng != null
+              ? 'Location confirmed'
+              : 'Mapandan overview',
+          body: _showMap && _mapLat != null && _mapLng != null
+              ? 'Check whether the pin matches the real incident scene before submitting.'
+              : 'The right-side panel becomes your confirmation map after GPS detection.',
+          child: _showMap && _mapLat != null && _mapLng != null
+              ? _buildLocationMap(_mapLat!, _mapLng!)
+              : _buildMapPlaceholder(),
+        ),
+        const SizedBox(height: 16),
+        _buildReportAsideCard(
+          kicker: 'Dispatch Tips',
+          title: 'What helps responders most',
+          body:
+              'Concise, specific details reduce callback delays and improve routing accuracy.',
+          child: Column(
+            children: [
+              _buildTipItem(
+                icon: Icons.phone_in_talk_outlined,
+                title: 'Keep your phone active',
+                body: 'Dispatch may call or text for quick verification.',
+              ),
+              const SizedBox(height: 10),
+              _buildTipItem(
+                icon: Icons.route_outlined,
+                title: 'Use landmarks',
+                body: 'Mention crossings, schools, bridges, or blocked access.',
+              ),
+              const SizedBox(height: 10),
+              _buildTipItem(
+                icon: Icons.photo_camera_outlined,
+                title: 'Attach a photo if safe',
+                body: 'Images help teams validate hazards before arrival.',
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildReportAsideCard({
+    required String kicker,
+    required String title,
+    required String body,
+    required Widget child,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFF8FBFF), Color(0xFFECF4FF)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x120F172A),
+            blurRadius: 20,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            kicker,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: AppColors.red,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.7,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+              color: AppColors.text,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            body,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppColors.muted,
+              height: 1.55,
+            ),
+          ),
+          const SizedBox(height: 14),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStepLink(String step, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.74),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(color: AppColors.border),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              step,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: AppColors.amberDeep,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppColors.text2,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTipItem({
+    required IconData icon,
+    required String title,
+    required String body,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: AppColors.greenLight,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppColors.greenBorder),
+          ),
+          child: Icon(icon, size: 16, color: AppColors.blue),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppColors.text,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                body,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: AppColors.muted,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildTitleSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
           decoration: BoxDecoration(
             color: AppColors.redLight,
             borderRadius: BorderRadius.circular(999),
@@ -4366,32 +5210,21 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           ),
         ),
         const SizedBox(height: 8),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(0, 6, 0, 2),
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(
-                color: AppColors.border.withValues(alpha: 0.55),
-              ),
+        RichText(
+          text: TextSpan(
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+              fontWeight: FontWeight.w900,
+              color: AppColors.text,
+              height: 1.05,
+              letterSpacing: -1.8,
             ),
-          ),
-          child: RichText(
-            text: TextSpan(
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                fontWeight: FontWeight.w900,
-                color: AppColors.text,
-                height: 1.05,
-                letterSpacing: -1.2,
+            children: const [
+              TextSpan(text: 'Report an '),
+              TextSpan(
+                text: 'Emergency',
+                style: TextStyle(color: AppColors.red),
               ),
-              children: const [
-                TextSpan(text: 'Report an '),
-                TextSpan(
-                  text: 'Emergency',
-                  style: TextStyle(color: AppColors.red),
-                ),
-              ],
-            ),
+            ],
           ),
         ),
         const SizedBox(height: 10),
@@ -4401,17 +5234,107 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             context,
           ).textTheme.bodySmall?.copyWith(color: AppColors.text2, height: 1.5),
         ),
+        const SizedBox(height: 16),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= 760;
+            final queueCard = _buildIntroCard(
+              icon: Icons.queue_outlined,
+              title: 'Offline Queue',
+              subtitle:
+                  'Queued reports re-send automatically when connectivity returns.',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Pending reports stay on-device until they can be delivered to dispatch.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppColors.muted,
+                      height: 1.55,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: OutlinedButton(
+                      onPressed: _showQueuedReportsInfo,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.text2,
+                        side: const BorderSide(color: AppColors.borderMid),
+                        backgroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                      ),
+                      child: const Text('Queue info'),
+                    ),
+                  ),
+                ],
+              ),
+            );
+            final tipsCard = _buildIntroCard(
+              icon: Icons.verified_user_outlined,
+              title: 'Dispatch-first details',
+              subtitle:
+                  'Clearer contact, location, and severity details speed up verification.',
+              child: Column(
+                children: [
+                  _buildMiniPoint(
+                    title: 'Verification',
+                    body: 'Use a name and number dispatch can confirm quickly.',
+                  ),
+                  const SizedBox(height: 10),
+                  _buildMiniPoint(
+                    title: 'Location clarity',
+                    body:
+                        'GPS plus barangay and landmark details make routing faster.',
+                  ),
+                ],
+              ),
+            );
+            return wide
+                ? Row(
+                    children: [
+                      Expanded(child: queueCard),
+                      const SizedBox(width: 14),
+                      Expanded(child: tipsCard),
+                    ],
+                  )
+                : Column(
+                    children: [
+                      queueCard,
+                      const SizedBox(height: 14),
+                      tipsCard,
+                    ],
+                  );
+          },
+        ),
       ],
     );
   }
 
   Widget _buildAlertStrip() {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        color: const Color(0xFFFEFAF1),
-        borderRadius: BorderRadius.circular(12),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFFBE9), Color(0xFFFFF1F2)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.orangeBorder),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x100F172A),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -4423,11 +5346,25 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           ),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(
-              'For life-threatening emergencies, call 911 immediately. This form is for reporting incidents and requesting assistance through SVS.',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: AppColors.text2,
-                height: 1.4,
+            child: RichText(
+              text: TextSpan(
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppColors.text2,
+                  height: 1.5,
+                ),
+                children: const [
+                  TextSpan(
+                    text: 'For life-threatening emergencies, call 911 immediately. ',
+                    style: TextStyle(
+                      color: AppColors.orange,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  TextSpan(
+                    text:
+                        'This form is for reporting incidents and requesting assistance through SVS.',
+                  ),
+                ],
               ),
             ),
           ),
@@ -4525,21 +5462,21 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       onTap: _pickPhoto,
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.all(18),
+        padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7FF),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.borderMid, width: 2),
+          color: Colors.white.withValues(alpha: 0.84),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.borderMid, width: 1.8),
         ),
         child: _photoFiles.isEmpty
             ? Column(
                 children: [
                   Container(
-                    width: 54,
-                    height: 54,
+                    width: 58,
+                    height: 58,
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(18),
                       border: Border.all(color: AppColors.border),
                     ),
                     child: const Icon(
@@ -4553,6 +5490,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                     'Tap to add a photo',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       fontWeight: FontWeight.w700,
+                      color: AppColors.text,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -4560,7 +5498,10 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                     'JPG or PNG up to 10 MB each',
                     style: Theme.of(
                       context,
-                    ).textTheme.labelSmall?.copyWith(color: AppColors.muted2),
+                    ).textTheme.labelSmall?.copyWith(
+                      color: AppColors.muted2,
+                      height: 1.45,
+                    ),
                   ),
                 ],
               )
@@ -4569,7 +5510,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 children: [
                   if (_photoPreviewBytes.isNotEmpty)
                     ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(14),
                       child: Image.memory(
                         _photoPreviewBytes.first,
                         width: double.infinity,
@@ -4721,20 +5662,16 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             top: BorderSide(color: AppColors.borderMid.withValues(alpha: 0.8)),
           ),
         ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Copyright $year SVS. All rights reserved.',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.labelSmall?.copyWith(color: AppColors.muted2),
-                ),
-              ],
-            );
-          },
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Copyright $year SVS. All rights reserved.',
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: AppColors.muted2),
+            ),
+          ],
         ),
       ),
     );
@@ -4745,84 +5682,125 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     required String title,
     required String subtitle,
     required Widget child,
+    String? badge,
     IconData? icon,
   }) {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
       decoration: BoxDecoration(
-        color: const Color(0xEFFFFFFF),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.border.withValues(alpha: 0.85)),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFF8FBFF), Color(0xFFEEF5FF)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x100F172A),
-            blurRadius: 14,
-            offset: Offset(0, 6),
+            color: Color(0x120F172A),
+            blurRadius: 20,
+            offset: Offset(0, 10),
           ),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.only(bottom: 14),
-            decoration: BoxDecoration(
-              border: Border(
-                bottom: BorderSide(
-                  color: AppColors.border.withValues(alpha: 0.65),
-                ),
-              ),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (icon != null) ...[
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF8FAFF),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: AppColors.border),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 360;
+              final info = Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    step,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppColors.red,
+                      letterSpacing: 1.8,
+                      fontWeight: FontWeight.w700,
                     ),
-                    child: Icon(icon, color: AppColors.blue, size: 20),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(height: 4),
+                  Text(
+                    title,
+                    maxLines: compact ? 3 : 2,
+                    overflow: TextOverflow.visible,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.blue,
+                      fontSize: compact ? 19 : null,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppColors.muted2,
+                      height: 1.5,
+                    ),
+                  ),
                 ],
-                Expanded(
-                  child: Column(
+              );
+
+              final badgeWidget = badge == null
+                  ? const SizedBox.shrink()
+                  : Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: compact ? 10 : 12,
+                        vertical: compact ? 7 : 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.78),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Text(
+                        badge,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: AppColors.muted,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                    );
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        step,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: AppColors.red,
-                          letterSpacing: 1.8,
-                          fontWeight: FontWeight.w700,
+                      if (icon != null) ...[
+                        Container(
+                          width: compact ? 46 : 50,
+                          height: compact ? 46 : 50,
+                          decoration: BoxDecoration(
+                            color: AppColors.amberLight,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: AppColors.amberBorder),
+                          ),
+                          child: Icon(
+                            icon,
+                            color: AppColors.amberDeep,
+                            size: compact ? 20 : 22,
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        title,
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.text,
-                            ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        subtitle,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppColors.muted,
-                          height: 1.45,
-                        ),
-                      ),
+                        const SizedBox(width: 12),
+                      ],
+                      Expanded(child: info),
+                      if (!compact && badge != null) ...[
+                        const SizedBox(width: 12),
+                        badgeWidget,
+                      ],
                     ],
                   ),
-                ),
-              ],
-            ),
+                  if (compact && badge != null) ...[
+                    const SizedBox(height: 10),
+                    Align(alignment: Alignment.centerLeft, child: badgeWidget),
+                  ],
+                ],
+              );
+            },
           ),
           const SizedBox(height: 16),
           child,
@@ -4839,6 +5817,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     TextInputType? keyboardType,
     String? prefixText,
     int maxLines = 1,
+    IconData? icon,
+    String? note,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -4860,35 +5840,49 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           decoration: InputDecoration(
             hintText: hint,
             prefixText: prefixText,
+            prefixIcon: icon == null
+                ? null
+                : Icon(icon, color: AppColors.muted2, size: 18),
             filled: true,
-            fillColor: const Color(0xFFFBFCFF),
+            fillColor: Colors.white.withValues(alpha: 0.82),
             contentPadding: EdgeInsets.symmetric(
               horizontal: 16,
-              vertical: maxLines > 1 ? 16 : 14,
+              vertical: maxLines > 1 ? 18 : 15,
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
               borderSide: BorderSide(
-                color: AppColors.border.withValues(alpha: 0.9),
+                color: AppColors.border.withValues(alpha: 0.95),
               ),
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
               borderSide: const BorderSide(
                 color: AppColors.amberDark,
                 width: 1.5,
               ),
             ),
             errorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
               borderSide: const BorderSide(color: AppColors.red),
             ),
             focusedErrorBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
               borderSide: const BorderSide(color: AppColors.red, width: 1.5),
             ),
           ),
         ),
+        if (note != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            note,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: AppColors.amberDeep,
+              height: 1.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -4941,13 +5935,13 @@ class _SelectChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(16),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 18),
         constraints: const BoxConstraints(minHeight: 110),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFFFFFAEE) : const Color(0xFFFBFCFF),
-          borderRadius: BorderRadius.circular(10),
+          color: selected ? AppColors.amberLight : Colors.white.withValues(alpha: 0.78),
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: selected ? AppColors.amberBorder : AppColors.border,
           ),
@@ -4960,14 +5954,14 @@ class _SelectChip extends StatelessWidget {
           ],
         ),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Container(
               width: 42,
               height: 42,
               decoration: BoxDecoration(
-                color: selected ? const Color(0xFFFFF8E4) : Colors.white,
-                borderRadius: BorderRadius.circular(12),
+                color: selected ? AppColors.amberLight : Colors.white,
+                borderRadius: BorderRadius.circular(13),
                 border: Border.all(
                   color: selected ? AppColors.amberBorder : AppColors.border,
                 ),
@@ -4985,6 +5979,7 @@ class _SelectChip extends StatelessWidget {
                 color: selected ? AppColors.amberDeep : AppColors.muted,
                 fontWeight: FontWeight.w700,
               ),
+              textAlign: TextAlign.center,
             ),
             const SizedBox(height: 4),
             Text(
@@ -4993,6 +5988,7 @@ class _SelectChip extends StatelessWidget {
                 color: AppColors.muted2,
                 height: 1.35,
               ),
+              textAlign: TextAlign.center,
             ),
           ],
         ),
@@ -5022,14 +6018,14 @@ class _SeverityButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
         decoration: BoxDecoration(
           color: selected
               ? color.withValues(alpha: 0.1)
-              : const Color(0xFFFBFCFF),
-          borderRadius: BorderRadius.circular(10),
+              : Colors.white.withValues(alpha: 0.78),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(color: selected ? color : AppColors.border),
           boxShadow: const [
             BoxShadow(
