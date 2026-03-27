@@ -719,8 +719,9 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           final data = jsonDecode(body) as Map<String, dynamic>;
           if (res.statusCode == 200 && data['success'] == true) {
             final raw = (data['report'] as Map).cast<String, dynamic>();
+            final report = TrackReport.fromJson(raw);
             return (
-              report: TrackReport.fromJson(raw),
+              report: report,
               raw: raw,
               error: null,
               notFound: false,
@@ -788,6 +789,13 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       );
 
       if (result.report == null || result.raw == null) {
+        final recoveredFromWeb = await _hydrateTrackFromWebPage(
+          normalized,
+          silent: silent,
+        );
+        if (recoveredFromWeb) {
+          return;
+        }
         if (allowFallback && _trackedReport == null) {
           await _showCachedTrackResult(normalized);
         }
@@ -810,10 +818,15 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         _trackError = null;
         _lastTrackedReportId = report.id;
       });
+
+      if (!_trackHasDispatcherUsername(report)) {
+        unawaited(_hydrateTrackFromWebPage(normalized, silent: silent));
+      }
     } on TimeoutException {
       if (allowFallback) {
         await _showCachedTrackResult(normalized);
       }
+      unawaited(_hydrateTrackFromWebPage(normalized, silent: silent));
       if (mounted && _trackedReport == null && !silent) {
         setState(() {
           _trackError = 'Tracking request timed out. Please try again.';
@@ -823,6 +836,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       if (allowFallback) {
         await _showCachedTrackResult(normalized);
       }
+      unawaited(_hydrateTrackFromWebPage(normalized, silent: silent));
       if (mounted && _trackedReport == null && !silent) {
         setState(() {
           _trackError = 'Could not load tracking details right now.';
@@ -949,7 +963,11 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     ];
 
     for (final value in candidates) {
-      if (value.isNotEmpty) return value;
+      final normalized = value.trim().toLowerCase();
+      if (value.isEmpty) continue;
+      if (normalized == 'waiting for dispatcher') continue;
+      if (normalized == 'no dispatcher username yet') continue;
+      return value;
     }
     return 'Waiting for dispatcher';
   }
@@ -961,6 +979,112 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       'Pragma': 'no-cache',
       'Expires': '0',
     };
+  }
+
+  bool _trackHasDispatcherData(TrackReport report) {
+    return report.currentDispatcher.trim().isNotEmpty &&
+            report.currentDispatcher.trim().toLowerCase() !=
+                'waiting for dispatcher' ||
+        report.dispatcherUsername.trim().isNotEmpty ||
+        report.dispatcherName.trim().isNotEmpty ||
+        report.assignedToUsername.trim().isNotEmpty ||
+        report.assignedToName.trim().isNotEmpty ||
+        report.claimedByUsername.trim().isNotEmpty ||
+        report.claimedByName.trim().isNotEmpty;
+  }
+
+  bool _trackHasDispatcherUsername(TrackReport report) {
+    return report.dispatcherUsername.trim().isNotEmpty ||
+        report.assignedToUsername.trim().isNotEmpty ||
+        report.claimedByUsername.trim().isNotEmpty;
+  }
+
+  Map<String, dynamic>? _extractEmbeddedTrackReport(String html) {
+    final reportMatch = RegExp(
+      r'INITIAL_TRACK_REPORT\s*=\s*(.*?);',
+      dotAll: true,
+    ).firstMatch(html);
+    if (reportMatch == null) return null;
+    final raw = reportMatch.group(1)?.trim();
+    if (raw == null || raw.isEmpty || raw == 'null') return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.cast<String, dynamic>();
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<({TrackReport? report, Map<String, dynamic>? raw})>
+  _fetchTrackReportFromWebPage(
+    String baseUrl,
+    String normalized, {
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
+    try {
+      final cacheBust = DateTime.now().millisecondsSinceEpoch.toString();
+      final url = Uri.parse(
+        '$baseUrl/track?id=${Uri.encodeQueryComponent(normalized)}&_ts=$cacheBust',
+      );
+      final res = await http
+          .get(url, headers: _trackRequestHeaders())
+          .timeout(timeout);
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return (report: null, raw: null);
+      }
+      final raw = _extractEmbeddedTrackReport(res.body);
+      if (raw == null) return (report: null, raw: null);
+      return (report: TrackReport.fromJson(raw), raw: raw);
+    } catch (_) {
+      return (report: null, raw: null);
+    }
+  }
+
+  Future<bool> _hydrateTrackFromWebPage(
+    String normalized, {
+    bool silent = true,
+  }) async {
+    final baseUrls = <String>{
+      _effectiveBaseUrl(),
+      ..._candidateBaseUrls().map(_normalizedBaseUrl),
+    }.where((url) => url.trim().isNotEmpty).toList();
+
+    for (final baseUrl in baseUrls) {
+      final pageResult = await _fetchTrackReportFromWebPage(
+        baseUrl,
+        normalized,
+        timeout: const Duration(seconds: 3),
+      );
+      if (pageResult.report == null || pageResult.raw == null) {
+        continue;
+      }
+
+      final report = pageResult.report!;
+      await _cacheTrackReport(pageResult.raw!);
+      await _saveLastSubmittedReportId(report.id);
+      if (!mounted) return false;
+
+      final shouldReplace =
+          _trackedReport == null ||
+          !_trackHasDispatcherUsername(_trackedReport!) &&
+              _trackHasDispatcherUsername(report) ||
+          !_trackHasDispatcherData(_trackedReport!) && _trackHasDispatcherData(report) ||
+          (_trackedReport?.status != report.status);
+
+      if (shouldReplace) {
+        setState(() {
+          _trackedReport = report;
+          _trackError = null;
+          _lastTrackedReportId = report.id;
+          if (!silent) {
+            _trackLoading = false;
+          }
+        });
+      }
+      return true;
+    }
+    return false;
   }
 
   Future<Position?> _getBestPosition({required Duration timeout}) async {
@@ -6261,36 +6385,95 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   }
 
   Widget _buildTrackPage() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFFF7FBFF), Color(0xFFEDF4FF)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
+      child: Stack(
         children: [
-          _buildTrackHero(),
-          const SizedBox(height: 18),
-          if (_trackError != null) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              decoration: BoxDecoration(
-                color: AppColors.redLight,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: AppColors.redBorder),
-              ),
-              child: Text(
-                _trackError!,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppColors.red,
-                  fontWeight: FontWeight.w700,
-                  height: 1.45,
-                ),
-              ),
+          const Positioned(
+            top: -40,
+            right: -30,
+            child: _TrackGlow(size: 170, color: Color(0x4D93C5FD)),
+          ),
+          const Positioned(
+            top: 220,
+            left: -50,
+            child: _TrackGlow(size: 190, color: Color(0x40BFDBFE)),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildTrackHero(),
+                const SizedBox(height: 18),
+                if (_trackError != null) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 16,
+                    ),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFFF1F2), Color(0xFFFFFBFB)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(color: AppColors.redBorder),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x12DC2626),
+                          blurRadius: 18,
+                          offset: Offset(0, 10),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: AppColors.redBorder),
+                          ),
+                          child: const Icon(
+                            Icons.error_outline_rounded,
+                            color: AppColors.red,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            _trackError!,
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(
+                                  color: AppColors.red,
+                                  fontWeight: FontWeight.w700,
+                                  height: 1.5,
+                                ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                ],
+                if (_trackedReport == null)
+                  _buildTrackIdleState()
+                else
+                  _buildTrackResult(_trackedReport!),
+              ],
             ),
-            const SizedBox(height: 18),
-          ],
-          if (_trackedReport == null)
-            _buildTrackIdleState()
-          else
-            _buildTrackResult(_trackedReport!),
+          ),
         ],
       ),
     );
@@ -6298,20 +6481,20 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
 
   Widget _buildTrackHero() {
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(26),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xF7FFFFFF), Color(0xFFEAF2FF)],
+          colors: [Color(0xFFFDFEFF), Color(0xFFE8F1FF), Color(0xFFDCEBFF)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(30),
-        border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
+        borderRadius: BorderRadius.circular(34),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.8)),
         boxShadow: const [
           BoxShadow(
             color: Color(0x140F172A),
-            blurRadius: 24,
-            offset: Offset(0, 12),
+            blurRadius: 30,
+            offset: Offset(0, 14),
           ),
         ],
       ),
@@ -6324,14 +6507,20 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.92),
+                  color: const Color(0xFF0F172A),
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x220F172A),
+                      blurRadius: 12,
+                      offset: Offset(0, 6),
+                    ),
+                  ],
                 ),
                 child: Text(
                   'TRACK REPORT',
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: AppColors.blue,
+                    color: Colors.white,
                     fontWeight: FontWeight.w800,
                     letterSpacing: 1.4,
                   ),
@@ -6339,11 +6528,11 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 16),
               Text(
-                'See your report progress without guessing what happens next.',
+                'See your report move through the response flow at a glance.',
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                   color: AppColors.text,
                   fontWeight: FontWeight.w900,
-                  height: 1.05,
+                  height: 1.02,
                 ),
               ),
               const SizedBox(height: 12),
@@ -6369,28 +6558,43 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           );
 
           final formCard = Container(
-            padding: const EdgeInsets.all(22),
+            padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.88),
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.7)),
+              gradient: const LinearGradient(
+                colors: [Color(0xFFFFFFFF), Color(0xFFF7FAFF)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(32),
+              border: Border.all(color: const Color(0xFFD7E7FF)),
               boxShadow: const [
                 BoxShadow(
-                  color: Color(0x120F172A),
-                  blurRadius: 24,
-                  offset: Offset(0, 12),
+                  color: Color(0x160F172A),
+                  blurRadius: 28,
+                  offset: Offset(0, 16),
                 ),
               ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'SEARCH',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: AppColors.muted2,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1.5,
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEFF6FF),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: const Color(0xFFBFDBFE)),
+                  ),
+                  child: Text(
+                    'SEARCH',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppColors.blue,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.5,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -6430,18 +6634,24 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                     labelText: 'Report ID',
                     hintText: 'RPT-0001',
                     filled: true,
-                    fillColor: Colors.white,
+                    fillColor: const Color(0xFFFDFEFF),
+                    labelStyle: const TextStyle(color: AppColors.muted),
+                    hintStyle: const TextStyle(color: Color(0xFF94A3B8)),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 18,
+                    ),
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(22),
                     ),
                     enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(22),
                       borderSide: BorderSide(
-                        color: AppColors.border.withValues(alpha: 0.95),
+                        color: const Color(0xFFCFE0FA),
                       ),
                     ),
                     focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(22),
                       borderSide: const BorderSide(
                         color: AppColors.blue,
                         width: 1.6,
@@ -6456,12 +6666,13 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                   child: FilledButton.icon(
                     onPressed: _trackLoading ? null : _lookupTrackReport,
                     style: FilledButton.styleFrom(
-                      backgroundColor: AppColors.text,
+                      backgroundColor: AppColors.blue,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 15),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(18),
+                        borderRadius: BorderRadius.circular(20),
                       ),
+                      elevation: 0,
                     ),
                     icon: _trackLoading
                         ? const SizedBox(
@@ -6492,44 +6703,29 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                               allowFallback: false,
                             ),
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.text,
-                        backgroundColor: Colors.white,
-                        side: BorderSide(
-                          color: AppColors.border.withValues(alpha: 0.95),
-                        ),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                      ),
-                      icon: const Icon(Icons.refresh_rounded, size: 18),
-                      label: const Text('Refresh details'),
-                    ),
-                  ),
-                ],
-                if ((_lastSubmittedReportId ?? '').isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton(
-                      onPressed: _trackLoading
-                          ? null
-                          : () => _lookupTrackReport(
-                              reportId: _lastSubmittedReportId,
-                            ),
-                      style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.blue,
-                        backgroundColor: const Color(0xFFEFF6FF),
+                        backgroundColor: const Color(0xFFFFFFFF),
                         side: const BorderSide(color: Color(0xFFBFDBFE)),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        padding: const EdgeInsets.symmetric(vertical: 15),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(18),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        elevation: 0,
+                      ),
+                      icon: Container(
+                        width: 26,
+                        height: 26,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Icon(
+                          Icons.refresh_rounded,
+                          size: 16,
+                          color: AppColors.blue,
                         ),
                       ),
-                      child: Text(
-                        'Use last submitted ID ($_lastSubmittedReportId)',
-                        textAlign: TextAlign.center,
-                      ),
+                      label: const Text('Refresh details'),
                     ),
                   ),
                 ],
@@ -6575,45 +6771,104 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: AppColors.border),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFFFFF), Color(0xFFF4F8FF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(30),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
         boxShadow: const [
           BoxShadow(
             color: Color(0x120F172A),
-            blurRadius: 20,
-            offset: Offset(0, 10),
+            blurRadius: 24,
+            offset: Offset(0, 12),
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'WAITING FOR LOOKUP',
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: AppColors.blue,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.4,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final stacked = constraints.maxWidth < 820;
+          final intro = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'WAITING FOR LOOKUP',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: AppColors.blue,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.4,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Enter a report ID to unlock the live progress view.',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: AppColors.text,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Once a valid report ID is entered, this page will show the current status, the dispatcher handling the case, the location summary, and how much time has passed since submission.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppColors.muted,
+                  height: 1.7,
+                ),
+              ),
+            ],
+          );
+
+          final steps = Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEEF5FF),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0xFFBFDBFE)),
             ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Enter a report ID to load the progress view.',
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-              color: AppColors.text,
-              fontWeight: FontWeight.w900,
+            child: const Column(
+              children: [
+                _TrackEmptyStep(
+                  icon: Icons.pin_outlined,
+                  title: 'Enter a valid report ID',
+                  subtitle: 'Use the code you received after submitting a report or SOS.',
+                ),
+                SizedBox(height: 12),
+                _TrackEmptyStep(
+                  icon: Icons.radar_outlined,
+                  title: 'Load live dispatcher updates',
+                  subtitle: 'Tracking checks the latest workflow state without editing the report.',
+                ),
+                SizedBox(height: 12),
+                _TrackEmptyStep(
+                  icon: Icons.route_outlined,
+                  title: 'Follow the response journey',
+                  subtitle: 'See status, timing, location, and assignment details in one place.',
+                ),
+              ],
             ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Once a valid report ID is entered, this page will show the current status, the dispatcher handling the case, the location summary, and how much time has passed since submission.',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: AppColors.muted,
-              height: 1.7,
-            ),
-          ),
-        ],
+          );
+
+          if (stacked) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                intro,
+                const SizedBox(height: 18),
+                steps,
+              ],
+            );
+          }
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 10, child: intro),
+              const SizedBox(width: 18),
+              Expanded(flex: 9, child: steps),
+            ],
+          );
+        },
       ),
     );
   }
@@ -6640,18 +6895,18 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               step: 'LOCATION',
               title: 'Reported location',
               subtitle: 'The summary below mirrors the location details attached to the report.',
+              icon: Icons.location_on_outlined,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 14,
+                      horizontal: 18,
+                      vertical: 18,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: AppColors.border),
+                      color: Colors.white.withValues(alpha: 0.6),
+                      borderRadius: BorderRadius.circular(22),
                     ),
                     child: Text(
                       report.location,
@@ -6663,26 +6918,32 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(height: 14),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _buildTrackDetailTile(
-                          label: 'Barangay',
-                          value: report.barangay.isEmpty
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.42),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Column(
+                      children: [
+                        _buildTrackInfoRow(
+                          'Barangay',
+                          report.barangay.isEmpty
                               ? 'Not available'
                               : report.barangay,
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _buildTrackDetailTile(
-                          label: 'Landmark / Street',
-                          value: landmarkStreet.isEmpty
+                        const SizedBox(height: 8),
+                        _buildTrackInfoRow(
+                          'Landmark / Street',
+                          landmarkStreet.isEmpty
                               ? 'Not available'
                               : landmarkStreet,
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -6694,22 +6955,41 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                   step: 'HANDLING',
                   title: 'Dispatcher activity',
                   subtitle: 'This section reflects the latest assignment details from the tracking endpoint.',
+                  icon: Icons.support_agent_outlined,
+                  badge: report.passCount > 0
+                      ? '${report.passCount} handoff${report.passCount == 1 ? '' : 's'}'
+                      : 'Active monitoring',
                   child: Column(
                     children: [
-                      _buildTrackDetailTile(
-                        label: 'Current dispatcher',
-                        value: dispatcherDisplay,
-                        note: dispatcherHandle,
-                      ),
-                      const SizedBox(height: 12),
-                      _buildTrackDetailTile(
-                        label: 'Transfer count',
-                        value: '${report.passCount}',
-                      ),
-                      const SizedBox(height: 12),
-                      _buildTrackDetailTile(
-                        label: 'Last handoff',
-                        value: lastPassedText,
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.42),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Column(
+                          children: [
+                            _buildTrackInfoRow(
+                              'Current dispatcher',
+                              dispatcherHandle == 'No dispatcher username yet'
+                                  ? dispatcherDisplay
+                                  : dispatcherHandle.replaceFirst('@', ''),
+                            ),
+                            const SizedBox(height: 8),
+                            _buildTrackInfoRow(
+                              'Transfer count',
+                              '${report.passCount}',
+                            ),
+                            const SizedBox(height: 8),
+                            _buildTrackInfoRow(
+                              'Last handoff',
+                              lastPassedText,
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -6721,6 +7001,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               step: 'TIMELINE',
               title: 'Progress timeline',
               subtitle: 'Major milestones are laid out in the same order as the web tracker.',
+              icon: Icons.timeline_rounded,
               child: _buildTrackTimeline(report),
             );
 
@@ -6728,6 +7009,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               step: 'REPORT INFO',
               title: 'Submitted details',
               subtitle: 'Reference details pulled from the submitted record.',
+              icon: Icons.description_outlined,
               child: Column(
                 children: [
                   _buildTrackInfoRow('Reporter', report.reporterName),
@@ -6789,60 +7071,135 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     final dispatcherHandle = _trackDispatcherHandle(report);
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = constraints.maxWidth >= 1080
-            ? 4
-            : constraints.maxWidth >= 720
-            ? 2
-            : 1;
-        return GridView.count(
-          crossAxisCount: columns,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          mainAxisSpacing: 14,
-          crossAxisSpacing: 14,
-          childAspectRatio: columns == 4 ? 1.22 : 1.34,
-          children: [
-            _buildTrackMetricCard(
-              label: 'Report ID',
-              value: report.id,
-              helper: 'Use this ID for future follow-up and status checks.',
+        final compact = constraints.maxWidth < 760;
+        return Container(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFFFFFFF), Color(0xFFF3F8FF)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
-            _buildTrackMetricCard(
-              label: 'Current Status',
-              helper:
-                  'Status updates reflect the latest dispatcher workflow state.',
-              customValue: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 7,
-                ),
-                decoration: BoxDecoration(
-                  color: statusMeta.bg,
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: statusMeta.border),
-                ),
-                child: Text(
-                  report.statusLabel,
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: statusMeta.fg,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.8,
-                  ),
-                ),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x120F172A),
+                blurRadius: 18,
+                offset: Offset(0, 10),
               ),
-            ),
-            _buildTrackMetricCard(
-              label: 'Current Dispatcher',
-              value: dispatcherDisplay,
-              helper: dispatcherHandle,
-              helperColor: AppColors.blue,
-            ),
-            _buildTrackMetricCard(
-              label: 'Time Passed',
-              value: _formatTrackElapsed(report.submittedAt),
-              helper: 'Submitted ${_formatTrackDateTime(report.submittedAt)}',
-            ),
-          ],
+            ],
+          ),
+          child: compact
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildTrackMetricItem(
+                      label: 'Report ID',
+                      value: report.id,
+                      helper: 'Use this ID for future follow-up and status checks.',
+                    ),
+                    const Divider(height: 26, color: Color(0xFFD9E8FF)),
+                    _buildTrackMetricItem(
+                      label: 'Current Status',
+                      customValue: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: statusMeta.bg,
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(color: statusMeta.border),
+                        ),
+                        child: Text(
+                          report.statusLabel,
+                          style: Theme.of(context).textTheme.labelMedium
+                              ?.copyWith(
+                                color: statusMeta.fg,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.8,
+                              ),
+                        ),
+                      ),
+                      helper:
+                          'Status updates reflect the latest dispatcher workflow state.',
+                    ),
+                    const Divider(height: 26, color: Color(0xFFD9E8FF)),
+                    _buildTrackMetricItem(
+                      label: 'Current Dispatcher',
+                      value: dispatcherHandle == 'No dispatcher username yet'
+                          ? dispatcherDisplay
+                          : dispatcherHandle.replaceFirst('@', ''),
+                    ),
+                    const Divider(height: 26, color: Color(0xFFD9E8FF)),
+                    _buildTrackMetricItem(
+                      label: 'Time Passed',
+                      value: _formatTrackElapsed(report.submittedAt),
+                      helper:
+                          'Submitted ${_formatTrackDateTime(report.submittedAt)}',
+                    ),
+                  ],
+                )
+              : Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: _buildTrackMetricItem(
+                        label: 'Report ID',
+                        value: report.id,
+                        helper:
+                            'Use this ID for future follow-up and status checks.',
+                      ),
+                    ),
+                    _buildTrackMetricDivider(),
+                    Expanded(
+                      child: _buildTrackMetricItem(
+                        label: 'Current Status',
+                        customValue: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 7,
+                          ),
+                          decoration: BoxDecoration(
+                            color: statusMeta.bg,
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(color: statusMeta.border),
+                          ),
+                          child: Text(
+                            report.statusLabel,
+                            style: Theme.of(context).textTheme.labelMedium
+                                ?.copyWith(
+                                  color: statusMeta.fg,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 0.8,
+                                ),
+                          ),
+                        ),
+                        helper:
+                            'Status updates reflect the latest dispatcher workflow state.',
+                      ),
+                    ),
+                    _buildTrackMetricDivider(),
+                    Expanded(
+                      child: _buildTrackMetricItem(
+                        label: 'Current Dispatcher',
+                        value: dispatcherHandle == 'No dispatcher username yet'
+                            ? dispatcherDisplay
+                            : dispatcherHandle.replaceFirst('@', ''),
+                      ),
+                    ),
+                    _buildTrackMetricDivider(),
+                    Expanded(
+                      child: _buildTrackMetricItem(
+                        label: 'Time Passed',
+                        value: _formatTrackElapsed(report.submittedAt),
+                        helper:
+                            'Submitted ${_formatTrackDateTime(report.submittedAt)}',
+                      ),
+                    ),
+                  ],
+                ),
         );
       },
     );
@@ -6856,11 +7213,15 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     Color? helperColor,
   }) {
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppColors.border),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFFFFF), Color(0xFFF2F7FF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.92)),
         boxShadow: const [
           BoxShadow(
             color: Color(0x120F172A),
@@ -6872,6 +7233,15 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Container(
+            width: 42,
+            height: 4,
+            decoration: BoxDecoration(
+              color: const Color(0xFFBFDBFE),
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+          const SizedBox(height: 14),
           Text(
             label.toUpperCase(),
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
@@ -6905,6 +7275,57 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildTrackMetricItem({
+    required String label,
+    String? value,
+    String? helper,
+    Widget? customValue,
+    Color? helperColor,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label.toUpperCase(),
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+            color: AppColors.muted2,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1,
+          ),
+        ),
+        const SizedBox(height: 10),
+        customValue ??
+            Text(
+              value ?? '-',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                color: AppColors.text,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+        if ((helper ?? '').isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(
+            helper!,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: helperColor ?? AppColors.muted2,
+              height: 1.55,
+              fontWeight: helperColor != null ? FontWeight.w700 : null,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildTrackMetricDivider() {
+    return Container(
+      width: 1,
+      height: 92,
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      color: const Color(0xFFD9E8FF),
+    );
+  }
+
   Widget _buildTrackDetailTile({
     required String label,
     required String value,
@@ -6914,13 +7335,29 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.88),
-        borderRadius: BorderRadius.circular(18),
+        color: Colors.white.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: AppColors.border),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x080F172A),
+            blurRadius: 10,
+            offset: Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Container(
+            width: 32,
+            height: 3,
+            decoration: BoxDecoration(
+              color: const Color(0xFFDBEAFE),
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+          const SizedBox(height: 10),
           Text(
             label.toUpperCase(),
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
@@ -6957,29 +7394,37 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   Widget _buildTrackInfoRow(String label, String value) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: Colors.white.withValues(alpha: 0.82),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
       ),
-      child: RichText(
-        text: TextSpan(
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color: AppColors.muted,
-            height: 1.55,
-          ),
-          children: [
-            TextSpan(
-              text: '$label: ',
-              style: const TextStyle(
-                color: AppColors.text,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 88,
+            child: Text(
+              label.toUpperCase(),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: AppColors.muted2,
                 fontWeight: FontWeight.w800,
+                letterSpacing: 0.9,
               ),
             ),
-            TextSpan(text: value.isEmpty ? '-' : value),
-          ],
-        ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              value.isEmpty ? '-' : value,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: AppColors.text,
+                fontWeight: FontWeight.w700,
+                height: 1.55,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -7036,42 +7481,43 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     return Column(
       children: [
         for (final item in items) ...[
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: AppColors.border),
-              boxShadow: const [
-                BoxShadow(
-                  color: Color(0x080F172A),
-                  blurRadius: 10,
-                  offset: Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: item.color.withValues(alpha: 0.12),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: item.color.withValues(alpha: 0.28),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Column(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: item.color.withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: item.color.withValues(alpha: 0.28),
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.circle,
+                      size: 12,
+                      color: item.color,
                     ),
                   ),
-                  child: Icon(
-                    Icons.circle,
-                    size: 12,
-                    color: item.color,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
+                  if (item != items.last)
+                    Container(
+                      width: 2,
+                      height: 54,
+                      margin: const EdgeInsets.symmetric(vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFD9E8FF),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 8),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -7089,9 +7535,10 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: AppColors.text,
                           fontWeight: FontWeight.w800,
+                          height: 1.45,
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 6),
                       Text(
                         _formatTrackDateTime(item.time),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -7102,10 +7549,14 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                     ],
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-          if (item != items.last) const SizedBox(height: 12),
+          if (item != items.last)
+            const Padding(
+              padding: EdgeInsets.only(left: 50),
+              child: Divider(height: 18, color: Color(0xFFD9E8FF)),
+            ),
         ],
       ],
     );
@@ -7483,6 +7934,91 @@ class _TrackBadge extends StatelessWidget {
           color: color,
           fontWeight: FontWeight.w800,
         ),
+      ),
+    );
+  }
+}
+
+class _TrackGlow extends StatelessWidget {
+  const _TrackGlow({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(
+            colors: [color, color.withValues(alpha: 0)],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TrackEmptyStep extends StatelessWidget {
+  const _TrackEmptyStep({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: const Color(0xFFDBEAFE),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(icon, color: AppColors.blue, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppColors.text,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.muted2,
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
