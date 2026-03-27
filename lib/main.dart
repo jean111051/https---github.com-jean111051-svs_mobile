@@ -617,10 +617,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getStringList(_localTrackReportsKey) ?? <String>[];
     final next = <String>[
-      jsonEncode({
-        ...payload,
-        'id': id,
-      }),
+      jsonEncode({...payload, 'id': id}),
     ];
 
     for (final item in raw) {
@@ -686,7 +683,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       String? error,
       bool notFound,
     })
-  > _fetchTrackReport(
+  >
+  _fetchTrackReport(
     String normalized, {
     Duration timeout = const Duration(seconds: 4),
   }) async {
@@ -720,12 +718,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           if (res.statusCode == 200 && data['success'] == true) {
             final raw = (data['report'] as Map).cast<String, dynamic>();
             final report = TrackReport.fromJson(raw);
-            return (
-              report: report,
-              raw: raw,
-              error: null,
-              notFound: false,
-            );
+            return (report: report, raw: raw, error: null, notFound: false);
           }
           if (res.statusCode == 404) {
             sawNotFound = true;
@@ -737,12 +730,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
       }
     }
 
-    return (
-      report: null,
-      raw: null,
-      error: lastError,
-      notFound: sawNotFound,
-    );
+    return (report: null, raw: null, error: lastError, notFound: sawNotFound);
   }
 
   Future<void> _lookupTrackReport({
@@ -1069,7 +1057,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           _trackedReport == null ||
           !_trackHasDispatcherUsername(_trackedReport!) &&
               _trackHasDispatcherUsername(report) ||
-          !_trackHasDispatcherData(_trackedReport!) && _trackHasDispatcherData(report) ||
+          !_trackHasDispatcherData(_trackedReport!) &&
+              _trackHasDispatcherData(report) ||
           (_trackedReport?.status != report.status);
 
       if (shouldReplace) {
@@ -1576,11 +1565,12 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         'claimedAt': '',
         'assignedAt': '',
         'lastPassedAt': '',
-        'location': [
-          _streetCtrl.text.trim(),
-          _landmarkCtrl.text.trim(),
-          _barangayCtrl.text.trim(),
-        ].where((part) => part.isNotEmpty).join(', ').isEmpty
+        'location':
+            [
+              _streetCtrl.text.trim(),
+              _landmarkCtrl.text.trim(),
+              _barangayCtrl.text.trim(),
+            ].where((part) => part.isNotEmpty).join(', ').isEmpty
             ? 'Location pending confirmation'
             : [
                 _streetCtrl.text.trim(),
@@ -1838,14 +1828,15 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         'claimedAt': '',
         'assignedAt': '',
         'lastPassedAt': '',
-        'location': [
-          payload['street']?.toString() ?? '',
-          payload['landmark']?.toString() ?? '',
-          payload['barangay']?.toString() ?? '',
-        ].where((part) => part.isNotEmpty).join(', ').isEmpty
+        'location':
+            [
+              payload['street']?.toString() ?? '',
+              payload['landmark']?.toString() ?? '',
+              payload['barangay']?.toString() ?? '',
+            ].where((part) => part.isNotEmpty).join(', ').isEmpty
             ? (payload['gps']?.toString().isNotEmpty ?? false)
-                ? 'GPS ${payload['gps']}'
-                : 'Location pending confirmation'
+                  ? 'GPS ${payload['gps']}'
+                  : 'Location pending confirmation'
             : [
                 payload['street']?.toString() ?? '',
                 payload['landmark']?.toString() ?? '',
@@ -2400,10 +2391,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
 
   String _alertDismissFingerprint(AdminAlert alert) {
     String normalize(String value) {
-      return value
-          .toLowerCase()
-          .replaceAll(RegExp(r'\s+'), ' ')
-          .trim();
+      return value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
     }
 
     final normalizedTitle = normalize(alert.title);
@@ -4287,15 +4275,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     final hour = now.hour % 12 == 0 ? 12 : now.hour % 12;
     final minute = now.minute.toString().padLeft(2, '0');
     final suffix = now.hour >= 12 ? 'PM' : 'AM';
-    const weekdayNames = [
-      'Mon',
-      'Tue',
-      'Wed',
-      'Thu',
-      'Fri',
-      'Sat',
-      'Sun',
-    ];
+    const weekdayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const monthNames = [
       'Jan',
       'Feb',
@@ -4341,7 +4321,9 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                   SizedBox(
                     width: compact ? constraints.maxWidth : null,
                     child: Row(
-                      mainAxisSize: compact ? MainAxisSize.max : MainAxisSize.min,
+                      mainAxisSize: compact
+                          ? MainAxisSize.max
+                          : MainAxisSize.min,
                       children: [
                         Container(
                           width: 56,
@@ -4650,7 +4632,9 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.92),
                   borderRadius: BorderRadius.circular(30),
-                  border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
+                  border: Border.all(
+                    color: AppColors.border.withValues(alpha: 0.9),
+                  ),
                   boxShadow: const [
                     BoxShadow(
                       color: Color(0x140F172A),
@@ -4728,8 +4712,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             hint: 'Juan dela Cruz',
             validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
             icon: Icons.person_outline,
-            note:
-                'Use the name responders can ask for during verification.',
+            note: 'Use the name responders can ask for during verification.',
           );
           final contactField = _textField(
             controller: _contactCtrl,
@@ -4890,10 +4873,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
-                side: const BorderSide(
-                  color: AppColors.borderMid,
-                  width: 1.5,
-                ),
+                side: const BorderSide(color: AppColors.borderMid, width: 1.5),
               ),
             ),
             icon: _detectingGps
@@ -4927,7 +4907,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 controller: _barangayCtrl,
                 label: 'Barangay',
                 hint: 'Barangay Rizal',
-                validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+                validator: (v) =>
+                    v == null || v.trim().isEmpty ? 'Required' : null,
                 icon: Icons.location_city_outlined,
                 note:
                     'Keep this specific so responders can route the report to the correct area.',
@@ -4936,7 +4917,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 controller: _landmarkCtrl,
                 label: 'Nearest landmark',
                 hint: 'Near Municipal Hall',
-                validator: (v) => v == null || v.trim().isEmpty ? 'Required' : null,
+                validator: (v) =>
+                    v == null || v.trim().isEmpty ? 'Required' : null,
                 icon: Icons.place_outlined,
                 note:
                     'Use a building, crossing, school, bridge, or any place responders can spot quickly.',
@@ -5047,7 +5029,10 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 ],
               );
               final pill = Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.amberLight,
                   borderRadius: BorderRadius.circular(999),
@@ -5065,11 +5050,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               return compact
                   ? Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        copy,
-                        const SizedBox(height: 10),
-                        pill,
-                      ],
+                      children: [copy, const SizedBox(height: 10), pill],
                     )
                   : Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -5362,9 +5343,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
               const SizedBox(height: 14),
               Text(
                 'Map preview will appear here',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleSmall?.copyWith(
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.w800,
                   color: AppColors.text,
                 ),
@@ -6038,11 +6017,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                     ],
                   )
                 : Column(
-                    children: [
-                      queueCard,
-                      const SizedBox(height: 14),
-                      tipsCard,
-                    ],
+                    children: [queueCard, const SizedBox(height: 14), tipsCard],
                   );
           },
         ),
@@ -6087,7 +6062,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 ),
                 children: const [
                   TextSpan(
-                    text: 'For life-threatening emergencies, call 911 immediately. ',
+                    text:
+                        'For life-threatening emergencies, call 911 immediately. ',
                     style: TextStyle(
                       color: AppColors.orange,
                       fontWeight: FontWeight.w800,
@@ -6229,9 +6205,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                   const SizedBox(height: 4),
                   Text(
                     'JPG or PNG up to 10 MB each',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.labelSmall?.copyWith(
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
                       color: AppColors.muted2,
                       height: 1.45,
                     ),
@@ -6505,7 +6479,10 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xFF0F172A),
                   borderRadius: BorderRadius.circular(999),
@@ -6548,10 +6525,26 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 spacing: 8,
                 runSpacing: 8,
                 children: const [
-                  _TrackBadge(label: 'Report ID lookup', tint: Color(0xFFDBEAFE), color: Color(0xFF1D4ED8)),
-                  _TrackBadge(label: 'Live status', tint: Colors.white, color: Color(0xFF334155)),
-                  _TrackBadge(label: 'Current dispatcher', tint: Colors.white, color: Color(0xFF334155)),
-                  _TrackBadge(label: 'Location summary', tint: Colors.white, color: Color(0xFF334155)),
+                  _TrackBadge(
+                    label: 'Report ID lookup',
+                    tint: Color(0xFFDBEAFE),
+                    color: Color(0xFF1D4ED8),
+                  ),
+                  _TrackBadge(
+                    label: 'Live status',
+                    tint: Colors.white,
+                    color: Color(0xFF334155),
+                  ),
+                  _TrackBadge(
+                    label: 'Current dispatcher',
+                    tint: Colors.white,
+                    color: Color(0xFF334155),
+                  ),
+                  _TrackBadge(
+                    label: 'Location summary',
+                    tint: Colors.white,
+                    color: Color(0xFF334155),
+                  ),
                 ],
               ),
             ],
@@ -6619,7 +6612,9 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                   focusNode: _trackIdFocusNode,
                   textCapitalization: TextCapitalization.characters,
                   inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9\-\s]')),
+                    FilteringTextInputFormatter.allow(
+                      RegExp(r'[A-Za-z0-9\-\s]'),
+                    ),
                     TextInputFormatter.withFunction((oldValue, newValue) {
                       final normalized = _normalizeTrackId(newValue.text);
                       return TextEditingValue(
@@ -6646,9 +6641,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                     ),
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(22),
-                      borderSide: BorderSide(
-                        color: const Color(0xFFCFE0FA),
-                      ),
+                      borderSide: BorderSide(color: const Color(0xFFCFE0FA)),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(22),
@@ -6746,11 +6739,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           if (stacked) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                intro,
-                const SizedBox(height: 20),
-                formCard,
-              ],
+              children: [intro, const SizedBox(height: 20), formCard],
             );
           }
 
@@ -6831,19 +6820,22 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 _TrackEmptyStep(
                   icon: Icons.pin_outlined,
                   title: 'Enter a valid report ID',
-                  subtitle: 'Use the code you received after submitting a report or SOS.',
+                  subtitle:
+                      'Use the code you received after submitting a report or SOS.',
                 ),
                 SizedBox(height: 12),
                 _TrackEmptyStep(
                   icon: Icons.radar_outlined,
                   title: 'Load live dispatcher updates',
-                  subtitle: 'Tracking checks the latest workflow state without editing the report.',
+                  subtitle:
+                      'Tracking checks the latest workflow state without editing the report.',
                 ),
                 SizedBox(height: 12),
                 _TrackEmptyStep(
                   icon: Icons.route_outlined,
                   title: 'Follow the response journey',
-                  subtitle: 'See status, timing, location, and assignment details in one place.',
+                  subtitle:
+                      'See status, timing, location, and assignment details in one place.',
                 ),
               ],
             ),
@@ -6852,11 +6844,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           if (stacked) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                intro,
-                const SizedBox(height: 18),
-                steps,
-              ],
+              children: [intro, const SizedBox(height: 18), steps],
             );
           }
 
@@ -6874,9 +6862,10 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   }
 
   Widget _buildTrackResult(TrackReport report) {
-    final landmarkStreet = [report.landmark, report.street]
-        .where((part) => part.trim().isNotEmpty)
-        .join(' | ');
+    final landmarkStreet = [
+      report.landmark,
+      report.street,
+    ].where((part) => part.trim().isNotEmpty).join(' | ');
     final dispatcherDisplay = _trackDispatcherDisplay(report);
     final dispatcherHandle = _trackDispatcherHandle(report);
     final lastPassedText = report.passCount > 0
@@ -6894,7 +6883,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             final locationCard = _buildCard(
               step: 'LOCATION',
               title: 'Reported location',
-              subtitle: 'The summary below mirrors the location details attached to the report.',
+              subtitle:
+                  'The summary below mirrors the location details attached to the report.',
               icon: Icons.location_on_outlined,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -6954,7 +6944,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 _buildCard(
                   step: 'HANDLING',
                   title: 'Dispatcher activity',
-                  subtitle: 'This section reflects the latest assignment details from the tracking endpoint.',
+                  subtitle:
+                      'This section reflects the latest assignment details from the tracking endpoint.',
                   icon: Icons.support_agent_outlined,
                   badge: report.passCount > 0
                       ? '${report.passCount} handoff${report.passCount == 1 ? '' : 's'}'
@@ -6984,10 +6975,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                               '${report.passCount}',
                             ),
                             const SizedBox(height: 8),
-                            _buildTrackInfoRow(
-                              'Last handoff',
-                              lastPassedText,
-                            ),
+                            _buildTrackInfoRow('Last handoff', lastPassedText),
                           ],
                         ),
                       ),
@@ -7000,7 +6988,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             final timelineCard = _buildCard(
               step: 'TIMELINE',
               title: 'Progress timeline',
-              subtitle: 'Major milestones are laid out in the same order as the web tracker.',
+              subtitle:
+                  'Major milestones are laid out in the same order as the web tracker.',
               icon: Icons.timeline_rounded,
               child: _buildTrackTimeline(report),
             );
@@ -7097,7 +7086,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                     _buildTrackMetricItem(
                       label: 'Report ID',
                       value: report.id,
-                      helper: 'Use this ID for future follow-up and status checks.',
+                      helper:
+                          'Use this ID for future follow-up and status checks.',
                     ),
                     const Divider(height: 26, color: Color(0xFFD9E8FF)),
                     _buildTrackMetricItem(
@@ -7430,53 +7420,56 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   }
 
   Widget _buildTrackTimeline(TrackReport report) {
-    final items = <({String label, String detail, DateTime? time, Color color})>[
-      (
-        label: 'Report submitted',
-        detail: report.reporterName.isEmpty
-            ? 'Submission received'
-            : 'Filed by ${report.reporterName}',
-        time: report.submittedAt,
-        color: AppColors.blue,
-      ),
-      if (report.claimedAt != null)
-        (
-          label: 'Dispatcher claimed',
-          detail: report.claimedBy.isEmpty
-              ? (_trackDispatcherDisplay(report).toLowerCase() ==
-                        'waiting for dispatcher'
-                    ? 'Dispatcher claimed the report'
-                    : _trackDispatcherDisplay(report))
-              : report.claimedBy,
-          time: report.claimedAt,
-          color: AppColors.amber,
-        ),
-      if (report.assignedAt != null)
-        (
-          label: 'Dispatcher assigned',
-          detail: _trackDispatcherDisplay(report).toLowerCase() ==
-                  'waiting for dispatcher'
-              ? 'Dispatcher handling started'
-              : _trackDispatcherDisplay(report),
-          time: report.assignedAt,
-          color: AppColors.amberDeep,
-        ),
-      if (report.lastPassedAt != null)
-        (
-          label: 'Report passed',
-          detail: report.lastPassedBy.isEmpty
-              ? 'Dispatcher handoff recorded'
-              : report.lastPassedBy,
-          time: report.lastPassedAt,
-          color: AppColors.red,
-        ),
-      (
-        label: 'Current status',
-        detail: report.statusLabel,
-        time: report.lastPassedAt ?? report.assignedAt ?? report.submittedAt,
-        color: _trackStatusMeta(report.status).fg,
-      ),
-    ];
+    final items =
+        <({String label, String detail, DateTime? time, Color color})>[
+          (
+            label: 'Report submitted',
+            detail: report.reporterName.isEmpty
+                ? 'Submission received'
+                : 'Filed by ${report.reporterName}',
+            time: report.submittedAt,
+            color: AppColors.blue,
+          ),
+          if (report.claimedAt != null)
+            (
+              label: 'Dispatcher claimed',
+              detail: report.claimedBy.isEmpty
+                  ? (_trackDispatcherDisplay(report).toLowerCase() ==
+                            'waiting for dispatcher'
+                        ? 'Dispatcher claimed the report'
+                        : _trackDispatcherDisplay(report))
+                  : report.claimedBy,
+              time: report.claimedAt,
+              color: AppColors.amber,
+            ),
+          if (report.assignedAt != null)
+            (
+              label: 'Dispatcher assigned',
+              detail:
+                  _trackDispatcherDisplay(report).toLowerCase() ==
+                      'waiting for dispatcher'
+                  ? 'Dispatcher handling started'
+                  : _trackDispatcherDisplay(report),
+              time: report.assignedAt,
+              color: AppColors.amberDeep,
+            ),
+          if (report.lastPassedAt != null)
+            (
+              label: 'Report passed',
+              detail: report.lastPassedBy.isEmpty
+                  ? 'Dispatcher handoff recorded'
+                  : report.lastPassedBy,
+              time: report.lastPassedAt,
+              color: AppColors.red,
+            ),
+          (
+            label: 'Current status',
+            detail: report.statusLabel,
+            time:
+                report.lastPassedAt ?? report.assignedAt ?? report.submittedAt,
+            color: _trackStatusMeta(report.status).fg,
+          ),
+        ];
 
     return Column(
       children: [
@@ -7496,11 +7489,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                         color: item.color.withValues(alpha: 0.28),
                       ),
                     ),
-                    child: Icon(
-                      Icons.circle,
-                      size: 12,
-                      color: item.color,
-                    ),
+                    child: Icon(Icons.circle, size: 12, color: item.color),
                   ),
                   if (item != items.last)
                     Container(
@@ -7851,7 +7840,9 @@ class _SelectChip extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 18),
         constraints: const BoxConstraints(minHeight: 110),
         decoration: BoxDecoration(
-          color: selected ? AppColors.amberLight : Colors.white.withValues(alpha: 0.78),
+          color: selected
+              ? AppColors.amberLight
+              : Colors.white.withValues(alpha: 0.78),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: selected ? AppColors.amberBorder : AppColors.border,
@@ -7953,9 +7944,7 @@ class _TrackGlow extends StatelessWidget {
         height: size,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          gradient: RadialGradient(
-            colors: [color, color.withValues(alpha: 0)],
-          ),
+          gradient: RadialGradient(colors: [color, color.withValues(alpha: 0)]),
         ),
       ),
     );
