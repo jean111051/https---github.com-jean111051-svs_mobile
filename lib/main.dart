@@ -155,6 +155,104 @@ class AdminAlert {
   }
 }
 
+class TrackReport {
+  const TrackReport({
+    required this.id,
+    required this.status,
+    required this.statusLabel,
+    required this.reporterName,
+    required this.emergencyType,
+    required this.currentDispatcher,
+    required this.dispatcherUsername,
+    required this.dispatcherName,
+    required this.claimedByUsername,
+    required this.claimedByName,
+    required this.claimedBy,
+    required this.assignedToUsername,
+    required this.assignedToName,
+    required this.passCount,
+    required this.lastPassedByUsername,
+    required this.lastPassedByName,
+    required this.lastPassedBy,
+    required this.submittedAt,
+    required this.claimedAt,
+    required this.assignedAt,
+    required this.lastPassedAt,
+    required this.location,
+    required this.barangay,
+    required this.landmark,
+    required this.street,
+    required this.gps,
+  });
+
+  final String id;
+  final String status;
+  final String statusLabel;
+  final String reporterName;
+  final String emergencyType;
+  final String currentDispatcher;
+  final String dispatcherUsername;
+  final String dispatcherName;
+  final String claimedByUsername;
+  final String claimedByName;
+  final String claimedBy;
+  final String assignedToUsername;
+  final String assignedToName;
+  final int passCount;
+  final String lastPassedByUsername;
+  final String lastPassedByName;
+  final String lastPassedBy;
+  final DateTime? submittedAt;
+  final DateTime? claimedAt;
+  final DateTime? assignedAt;
+  final DateTime? lastPassedAt;
+  final String location;
+  final String barangay;
+  final String landmark;
+  final String street;
+  final String gps;
+
+  factory TrackReport.fromJson(Map<String, dynamic> json) {
+    final locationParts =
+        (json['locationParts'] as Map?)?.cast<String, dynamic>() ??
+        <String, dynamic>{};
+    return TrackReport(
+      id: (json['id'] ?? '').toString().trim(),
+      status: (json['status'] ?? 'new').toString().trim().toLowerCase(),
+      statusLabel: (json['statusLabel'] ?? 'Pending').toString().trim(),
+      reporterName: (json['reporterName'] ?? 'Reporter').toString().trim(),
+      emergencyType: (json['emergencyType'] ?? 'Emergency Report')
+          .toString()
+          .trim(),
+      currentDispatcher: (json['currentDispatcher'] ?? '').toString().trim(),
+      dispatcherUsername: (json['dispatcherUsername'] ?? '').toString().trim(),
+      dispatcherName: (json['dispatcherName'] ?? '').toString().trim(),
+      claimedByUsername: (json['claimedByUsername'] ?? '').toString().trim(),
+      claimedByName: (json['claimedByName'] ?? '').toString().trim(),
+      claimedBy: (json['claimedBy'] ?? '').toString().trim(),
+      assignedToUsername: (json['assignedToUsername'] ?? '').toString().trim(),
+      assignedToName: (json['assignedToName'] ?? '').toString().trim(),
+      passCount: (json['passCount'] as num?)?.toInt() ?? 0,
+      lastPassedByUsername: (json['lastPassedByUsername'] ?? '')
+          .toString()
+          .trim(),
+      lastPassedByName: (json['lastPassedByName'] ?? '').toString().trim(),
+      lastPassedBy: (json['lastPassedBy'] ?? '').toString().trim(),
+      submittedAt: DateTime.tryParse((json['submittedAt'] ?? '').toString()),
+      claimedAt: DateTime.tryParse((json['claimedAt'] ?? '').toString()),
+      assignedAt: DateTime.tryParse((json['assignedAt'] ?? '').toString()),
+      lastPassedAt: DateTime.tryParse((json['lastPassedAt'] ?? '').toString()),
+      location: (json['location'] ?? 'Location pending confirmation')
+          .toString()
+          .trim(),
+      barangay: (locationParts['barangay'] ?? '').toString().trim(),
+      landmark: (locationParts['landmark'] ?? '').toString().trim(),
+      street: (locationParts['street'] ?? '').toString().trim(),
+      gps: (locationParts['gps'] ?? '').toString().trim(),
+    );
+  }
+}
+
 class ReportPage extends StatefulWidget {
   const ReportPage({super.key});
 
@@ -174,6 +272,8 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   final _descCtrl = TextEditingController();
   final _panicCtrl = TextEditingController();
   final _faqFeedbackCtrl = TextEditingController();
+  final _trackIdCtrl = TextEditingController();
+  final _trackIdFocusNode = FocusNode();
 
   final _formKey = GlobalKey<FormState>();
 
@@ -206,10 +306,16 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   bool _checkingAlerts = false;
   bool _alertDialogOpen = false;
   int _navIndex = 2;
+  bool _trackLoading = false;
+  String? _lastSubmittedReportId;
+  String? _trackError;
+  TrackReport? _trackedReport;
 
   String? _panicNumber;
   String _baseUrl = 'https://svsmdrrmo.vercel.app';
   static const String _queuedReportsKey = 'queued_reports';
+  static const String _lastSubmittedReportIdKey = 'svs_last_report_id';
+  static const String _localTrackReportsKey = 'local_track_reports';
   static const String _lastSeenAlertIdKey = 'last_seen_alert_id';
   static const String _dismissedAlertFingerprintsKey =
       'dismissed_alert_fingerprints';
@@ -233,11 +339,33 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
   AdminAlert? _activeAlert;
   String _alertDebugStatus = 'idle';
   String _alertDebugSource = '-';
+  Timer? _trackClockTimer;
+  Timer? _trackRefreshTimer;
+  String? _lastTrackedReportId;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _trackClockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _trackedReport == null) return;
+      setState(() {});
+    });
+    _trackRefreshTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (!mounted ||
+          _navIndex != 4 ||
+          _lastTrackedReportId == null ||
+          _trackIdFocusNode.hasFocus) {
+        return;
+      }
+      unawaited(
+        _lookupTrackReport(
+          reportId: _lastTrackedReportId,
+          silent: true,
+          allowFallback: false,
+        ),
+      );
+    });
     _initializeApp();
   }
 
@@ -261,6 +389,10 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     _descCtrl.dispose();
     _panicCtrl.dispose();
     _faqFeedbackCtrl.dispose();
+    _trackIdCtrl.dispose();
+    _trackIdFocusNode.dispose();
+    _trackClockTimer?.cancel();
+    _trackRefreshTimer?.cancel();
     super.dispose();
   }
 
@@ -281,12 +413,14 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     final panicNum = prefs.getString('panic_number');
     final baseUrl = prefs.getString('base_url');
+    final lastSubmittedReportId = prefs.getString(_lastSubmittedReportIdKey);
     final lastSeenAlertId = prefs.getString(_lastSeenAlertIdKey);
     final dismissedAlertFingerprints =
         prefs.getStringList(_dismissedAlertFingerprintsKey) ?? <String>[];
     setState(() {
       _panicNumber = panicNum;
       _panicCtrl.text = _formatPhMobile(_panicNumber);
+      _lastSubmittedReportId = lastSubmittedReportId;
       _lastSeenAlertId = lastSeenAlertId;
       _dismissedAlertFingerprints
         ..clear()
@@ -464,6 +598,369 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     final p3 = digits.substring(5, 8);
     final p4 = digits.substring(8);
     return '+$p1 $p2 $p3 $p4';
+  }
+
+  Future<void> _saveLastSubmittedReportId(String reportId) async {
+    final normalized = _normalizeTrackId(reportId);
+    if (normalized.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_lastSubmittedReportIdKey, normalized);
+    if (!mounted) return;
+    setState(() {
+      _lastSubmittedReportId = normalized;
+    });
+  }
+
+  Future<void> _cacheTrackReport(Map<String, dynamic> payload) async {
+    final id = _normalizeTrackId((payload['id'] ?? '').toString());
+    if (id.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getStringList(_localTrackReportsKey) ?? <String>[];
+    final next = <String>[
+      jsonEncode({
+        ...payload,
+        'id': id,
+      }),
+    ];
+
+    for (final item in raw) {
+      try {
+        final decoded = (jsonDecode(item) as Map).cast<String, dynamic>();
+        final existingId = _normalizeTrackId((decoded['id'] ?? '').toString());
+        if (existingId.isEmpty || existingId == id) continue;
+        next.add(jsonEncode(decoded));
+      } catch (_) {}
+      if (next.length >= 25) break;
+    }
+
+    await prefs.setStringList(_localTrackReportsKey, next);
+  }
+
+  Future<TrackReport?> _getCachedTrackReport(String reportId) async {
+    final normalized = _normalizeTrackId(reportId);
+    if (normalized.isEmpty) return null;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getStringList(_localTrackReportsKey) ?? <String>[];
+    for (final item in raw) {
+      try {
+        final decoded = (jsonDecode(item) as Map).cast<String, dynamic>();
+        final existingId = _normalizeTrackId((decoded['id'] ?? '').toString());
+        if (existingId == normalized) {
+          return TrackReport.fromJson(decoded);
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Future<void> _showCachedTrackResult(String reportId) async {
+    final cached = await _getCachedTrackReport(reportId);
+    if (!mounted) return;
+    if (cached != null) {
+      setState(() {
+        _trackedReport = cached;
+        _trackError = null;
+        _lastTrackedReportId = cached.id;
+      });
+      return;
+    }
+    setState(() {
+      _trackedReport = null;
+      _trackError = 'Report ID not found. Check the ID and try again.';
+      _lastTrackedReportId = null;
+    });
+  }
+
+  String _normalizeTrackId(String input) {
+    final compact = input.trim().replaceAll(RegExp(r'\s+'), '');
+    if (RegExp(r'^[a-fA-F0-9]{24}$').hasMatch(compact)) {
+      return compact.toLowerCase();
+    }
+    return compact.toUpperCase();
+  }
+
+  Future<
+    ({
+      TrackReport? report,
+      Map<String, dynamic>? raw,
+      String? error,
+      bool notFound,
+    })
+  > _fetchTrackReport(
+    String normalized, {
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
+    final baseUrls = <String>{
+      _effectiveBaseUrl(),
+      ..._candidateBaseUrls().map(_normalizedBaseUrl),
+    }.where((url) => url.trim().isNotEmpty).toList();
+    String? lastError;
+    var sawNotFound = false;
+    final cacheBust = DateTime.now().millisecondsSinceEpoch.toString();
+
+    for (final baseUrl in baseUrls) {
+      final endpoints = [
+        Uri.parse('$baseUrl/api/track/$normalized?_ts=$cacheBust'),
+        Uri.parse(
+          '$baseUrl/api/track?id=${Uri.encodeQueryComponent(normalized)}&_ts=$cacheBust',
+        ),
+      ];
+
+      for (final url in endpoints) {
+        try {
+          final res = await http
+              .get(url, headers: _trackRequestHeaders())
+              .timeout(timeout);
+          final body = res.body.trim();
+          if (body.isEmpty || !body.startsWith('{')) {
+            lastError = 'Invalid tracking response';
+            continue;
+          }
+          final data = jsonDecode(body) as Map<String, dynamic>;
+          if (res.statusCode == 200 && data['success'] == true) {
+            final raw = (data['report'] as Map).cast<String, dynamic>();
+            return (
+              report: TrackReport.fromJson(raw),
+              raw: raw,
+              error: null,
+              notFound: false,
+            );
+          }
+          if (res.statusCode == 404) {
+            sawNotFound = true;
+          }
+          lastError = data['error']?.toString() ?? 'Tracking lookup failed';
+        } catch (e) {
+          lastError = e.toString();
+        }
+      }
+    }
+
+    return (
+      report: null,
+      raw: null,
+      error: lastError,
+      notFound: sawNotFound,
+    );
+  }
+
+  Future<void> _lookupTrackReport({
+    String? reportId,
+    bool silent = false,
+    bool allowFallback = true,
+  }) async {
+    final normalized = _normalizeTrackId(reportId ?? _trackIdCtrl.text);
+    if (normalized.isEmpty) {
+      setState(() {
+        _trackError = 'Enter a valid report ID first.';
+        _trackedReport = null;
+      });
+      return;
+    }
+    if (!silent && !_trackIdFocusNode.hasFocus) {
+      _trackIdCtrl.text = normalized;
+    }
+
+    if (!silent) {
+      setState(() {
+        _trackLoading = true;
+        _trackError = null;
+      });
+    }
+
+    try {
+      if (allowFallback) {
+        final cached = await _getCachedTrackReport(normalized);
+        if (cached != null && mounted) {
+          setState(() {
+            _trackedReport = cached;
+            _trackError = null;
+            _lastTrackedReportId = cached.id;
+          });
+        }
+      }
+
+      final result = await _fetchTrackReport(
+        normalized,
+        timeout: silent
+            ? const Duration(seconds: 3)
+            : const Duration(seconds: 4),
+      );
+
+      if (result.report == null || result.raw == null) {
+        if (allowFallback && _trackedReport == null) {
+          await _showCachedTrackResult(normalized);
+        }
+        if (mounted && _trackedReport == null && !silent) {
+          setState(() {
+            _trackError = result.notFound
+                ? 'Report ID not found. Check the ID and try again.'
+                : 'Could not load tracking details right now.';
+          });
+        }
+        return;
+      }
+
+      final report = result.report!;
+      await _saveLastSubmittedReportId(report.id);
+      await _cacheTrackReport(result.raw!);
+      if (!mounted) return;
+      setState(() {
+        _trackedReport = report;
+        _trackError = null;
+        _lastTrackedReportId = report.id;
+      });
+    } on TimeoutException {
+      if (allowFallback) {
+        await _showCachedTrackResult(normalized);
+      }
+      if (mounted && _trackedReport == null && !silent) {
+        setState(() {
+          _trackError = 'Tracking request timed out. Please try again.';
+        });
+      }
+    } catch (e) {
+      if (allowFallback) {
+        await _showCachedTrackResult(normalized);
+      }
+      if (mounted && _trackedReport == null && !silent) {
+        setState(() {
+          _trackError = 'Could not load tracking details right now.';
+        });
+      }
+      debugPrint('Track lookup error: $e');
+    } finally {
+      if (mounted && !silent) {
+        setState(() {
+          _trackLoading = false;
+        });
+      }
+    }
+  }
+
+  String _formatTrackDateTime(DateTime? value) {
+    if (value == null) return 'Time unavailable';
+    final local = value.toLocal();
+    const monthNames = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final hour24 = local.hour;
+    final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
+    final minute = local.minute.toString().padLeft(2, '0');
+    final suffix = hour24 >= 12 ? 'PM' : 'AM';
+    return '${monthNames[local.month - 1]} ${local.day}, ${local.year} $hour12:$minute $suffix';
+  }
+
+  String _formatTrackElapsed(DateTime? value) {
+    if (value == null) return 'Just now';
+    final diff = DateTime.now().difference(value.toLocal());
+    final safe = diff.isNegative ? Duration.zero : diff;
+    final totalMinutes = safe.inMinutes;
+    final totalHours = safe.inHours;
+    final totalDays = safe.inDays;
+    final minutes = totalMinutes % 60;
+    final hours = totalHours % 24;
+
+    if (totalDays > 0) return '${totalDays}d ${hours}h ${minutes}m';
+    if (totalHours > 0) return '${totalHours}h ${minutes}m';
+    return '${totalMinutes.clamp(0, 59)}m';
+  }
+
+  ({Color fg, Color bg, Color border, IconData icon}) _trackStatusMeta(
+    String status,
+  ) {
+    switch (status) {
+      case 'verifying':
+        return (
+          fg: AppColors.amberDeep,
+          bg: AppColors.amberLight,
+          border: AppColors.amberBorder,
+          icon: Icons.fact_check_outlined,
+        );
+      case 'dispatched':
+        return (
+          fg: AppColors.red,
+          bg: AppColors.redLight,
+          border: AppColors.redBorder,
+          icon: Icons.local_shipping_outlined,
+        );
+      case 'resolved':
+        return (
+          fg: AppColors.green,
+          bg: AppColors.greenLight,
+          border: AppColors.greenBorder,
+          icon: Icons.task_alt_outlined,
+        );
+      case 'false-report':
+        return (
+          fg: AppColors.muted,
+          bg: const Color(0xFFF1F5F9),
+          border: const Color(0xFFCBD5E1),
+          icon: Icons.gpp_bad_outlined,
+        );
+      default:
+        return (
+          fg: AppColors.blue,
+          bg: const Color(0xFFEEF4FF),
+          border: const Color(0xFFBFDBFE),
+          icon: Icons.info_outline_rounded,
+        );
+    }
+  }
+
+  String _trackDispatcherHandle(TrackReport report) {
+    final username = [
+      report.dispatcherUsername.trim(),
+      report.assignedToUsername.trim(),
+      report.claimedByUsername.trim(),
+    ].firstWhere((value) => value.isNotEmpty, orElse: () => '');
+    if (username.isNotEmpty) return '@$username';
+
+    final display = _trackDispatcherDisplay(report);
+    final looksLikeHandle =
+        display.isNotEmpty &&
+        !display.contains(' ') &&
+        display.toLowerCase() != 'waiting for dispatcher';
+    if (looksLikeHandle) return '@$display';
+
+    return 'No dispatcher username yet';
+  }
+
+  String _trackDispatcherDisplay(TrackReport report) {
+    final candidates = [
+      report.currentDispatcher.trim(),
+      report.assignedToName.trim(),
+      report.dispatcherName.trim(),
+      report.claimedByName.trim(),
+      report.assignedToUsername.trim(),
+      report.dispatcherUsername.trim(),
+      report.claimedByUsername.trim(),
+    ];
+
+    for (final value in candidates) {
+      if (value.isNotEmpty) return value;
+    }
+    return 'Waiting for dispatcher';
+  }
+
+  Map<String, String> _trackRequestHeaders() {
+    return {
+      ..._apiHeaders(),
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    };
   }
 
   Future<Position?> _getBestPosition({required Duration timeout}) async {
@@ -930,6 +1427,49 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         return;
       }
       final reportId = data['id']?.toString() ?? 'RPT-0000';
+      await _saveLastSubmittedReportId(reportId);
+      await _cacheTrackReport({
+        'id': reportId,
+        'status': 'new',
+        'statusLabel': 'New',
+        'reporterName': _nameCtrl.text.trim().isEmpty
+            ? 'Reporter'
+            : _nameCtrl.text.trim(),
+        'emergencyType': _selectedType ?? 'Emergency Report',
+        'currentDispatcher': 'Waiting for dispatcher',
+        'dispatcherUsername': '',
+        'dispatcherName': '',
+        'claimedByUsername': '',
+        'claimedByName': '',
+        'claimedBy': '',
+        'assignedToUsername': '',
+        'assignedToName': '',
+        'passCount': 0,
+        'lastPassedByUsername': '',
+        'lastPassedByName': '',
+        'lastPassedBy': '',
+        'submittedAt': DateTime.now().toIso8601String(),
+        'claimedAt': '',
+        'assignedAt': '',
+        'lastPassedAt': '',
+        'location': [
+          _streetCtrl.text.trim(),
+          _landmarkCtrl.text.trim(),
+          _barangayCtrl.text.trim(),
+        ].where((part) => part.isNotEmpty).join(', ').isEmpty
+            ? 'Location pending confirmation'
+            : [
+                _streetCtrl.text.trim(),
+                _landmarkCtrl.text.trim(),
+                _barangayCtrl.text.trim(),
+              ].where((part) => part.isNotEmpty).join(', '),
+        'locationParts': {
+          'barangay': _barangayCtrl.text.trim(),
+          'landmark': _landmarkCtrl.text.trim(),
+          'street': _streetCtrl.text.trim(),
+          'gps': gpsValue,
+        },
+      });
       if (!mounted) return;
       await showDialog<void>(
         context: context,
@@ -1074,6 +1614,10 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         final parsed = jsonDecode(res.body) as Map<String, dynamic>;
         final ok = res.statusCode == 200 && parsed['success'] == true;
         if (ok) {
+          final reportId = parsed['id']?.toString() ?? '';
+          if (reportId.trim().isNotEmpty) {
+            await _saveLastSubmittedReportId(reportId);
+          }
           sent += 1;
         } else {
           remaining.add(storedItem);
@@ -1147,6 +1691,49 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         return;
       }
       final reportId = data['id']?.toString() ?? 'SOS-0000';
+      await _saveLastSubmittedReportId(reportId);
+      await _cacheTrackReport({
+        'id': reportId,
+        'status': 'new',
+        'statusLabel': 'New',
+        'reporterName': 'SOS Reporter',
+        'emergencyType': 'Panic SOS',
+        'currentDispatcher': 'Waiting for dispatcher',
+        'dispatcherUsername': '',
+        'dispatcherName': '',
+        'claimedByUsername': '',
+        'claimedByName': '',
+        'claimedBy': '',
+        'assignedToUsername': '',
+        'assignedToName': '',
+        'passCount': 0,
+        'lastPassedByUsername': '',
+        'lastPassedByName': '',
+        'lastPassedBy': '',
+        'submittedAt': DateTime.now().toIso8601String(),
+        'claimedAt': '',
+        'assignedAt': '',
+        'lastPassedAt': '',
+        'location': [
+          payload['street']?.toString() ?? '',
+          payload['landmark']?.toString() ?? '',
+          payload['barangay']?.toString() ?? '',
+        ].where((part) => part.isNotEmpty).join(', ').isEmpty
+            ? (payload['gps']?.toString().isNotEmpty ?? false)
+                ? 'GPS ${payload['gps']}'
+                : 'Location pending confirmation'
+            : [
+                payload['street']?.toString() ?? '',
+                payload['landmark']?.toString() ?? '',
+                payload['barangay']?.toString() ?? '',
+              ].where((part) => part.isNotEmpty).join(', '),
+        'locationParts': {
+          'barangay': payload['barangay']?.toString() ?? '',
+          'landmark': payload['landmark']?.toString() ?? '',
+          'street': payload['street']?.toString() ?? '',
+          'gps': payload['gps']?.toString() ?? '',
+        },
+      });
       if (!mounted) return;
       await showDialog<void>(
         context: context,
@@ -2226,6 +2813,13 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
           SliverToBoxAdapter(child: _buildHeader()),
           SliverToBoxAdapter(child: _buildAdminAlertBanner()),
           SliverToBoxAdapter(child: _buildFaqPage()),
+          SliverToBoxAdapter(child: _buildFooter()),
+        ];
+      case 4:
+        return [
+          SliverToBoxAdapter(child: _buildHeader()),
+          SliverToBoxAdapter(child: _buildAdminAlertBanner()),
+          SliverToBoxAdapter(child: _buildTrackPage()),
           SliverToBoxAdapter(child: _buildFooter()),
         ];
       default:
@@ -3517,7 +4111,18 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
             borderRadius: BorderRadius.circular(16),
             child: BottomNavigationBar(
               currentIndex: _navIndex,
-              onTap: (index) => setState(() => _navIndex = index),
+              onTap: (index) {
+                setState(() => _navIndex = index);
+                if (index == 4 && _lastTrackedReportId != null) {
+                  unawaited(
+                    _lookupTrackReport(
+                      reportId: _lastTrackedReportId,
+                      silent: true,
+                      allowFallback: false,
+                    ),
+                  );
+                }
+              },
               iconSize: 24,
               selectedFontSize: 13,
               unselectedFontSize: 12,
@@ -3540,6 +4145,10 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
                 BottomNavigationBarItem(
                   icon: Icon(Icons.quiz_rounded),
                   label: 'FAQ',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.travel_explore_rounded),
+                  label: 'Track',
                 ),
               ],
             ),
@@ -5651,6 +6260,857 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     );
   }
 
+  Widget _buildTrackPage() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildTrackHero(),
+          const SizedBox(height: 18),
+          if (_trackError != null) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: AppColors.redLight,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: AppColors.redBorder),
+              ),
+              child: Text(
+                _trackError!,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppColors.red,
+                  fontWeight: FontWeight.w700,
+                  height: 1.45,
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+          ],
+          if (_trackedReport == null)
+            _buildTrackIdleState()
+          else
+            _buildTrackResult(_trackedReport!),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrackHero() {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xF7FFFFFF), Color(0xFFEAF2FF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(30),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x140F172A),
+            blurRadius: 24,
+            offset: Offset(0, 12),
+          ),
+        ],
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final stacked = constraints.maxWidth < 760;
+          final intro = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.92),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                ),
+                child: Text(
+                  'TRACK REPORT',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: AppColors.blue,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.4,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'See your report progress without guessing what happens next.',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: AppColors.text,
+                  fontWeight: FontWeight.w900,
+                  height: 1.05,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Enter your report ID to check its current status, the dispatcher currently handling it, the time passed since submission, and the location tied to the report.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppColors.muted,
+                  height: 1.7,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: const [
+                  _TrackBadge(label: 'Report ID lookup', tint: Color(0xFFDBEAFE), color: Color(0xFF1D4ED8)),
+                  _TrackBadge(label: 'Live status', tint: Colors.white, color: Color(0xFF334155)),
+                  _TrackBadge(label: 'Current dispatcher', tint: Colors.white, color: Color(0xFF334155)),
+                  _TrackBadge(label: 'Location summary', tint: Colors.white, color: Color(0xFF334155)),
+                ],
+              ),
+            ],
+          );
+
+          final formCard = Container(
+            padding: const EdgeInsets.all(22),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.88),
+              borderRadius: BorderRadius.circular(28),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.7)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x120F172A),
+                  blurRadius: 24,
+                  offset: Offset(0, 12),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'SEARCH',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: AppColors.muted2,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Enter your report ID',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: AppColors.text,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Use the ID shown after submission, such as RPT-0001 or SOS-0001.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppColors.muted,
+                    height: 1.6,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _trackIdCtrl,
+                  focusNode: _trackIdFocusNode,
+                  textCapitalization: TextCapitalization.characters,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9\-\s]')),
+                    TextInputFormatter.withFunction((oldValue, newValue) {
+                      final normalized = _normalizeTrackId(newValue.text);
+                      return TextEditingValue(
+                        text: normalized,
+                        selection: TextSelection.collapsed(
+                          offset: normalized.length,
+                        ),
+                      );
+                    }),
+                  ],
+                  decoration: InputDecoration(
+                    labelText: 'Report ID',
+                    hintText: 'RPT-0001',
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: BorderSide(
+                        color: AppColors.border.withValues(alpha: 0.95),
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      borderSide: const BorderSide(
+                        color: AppColors.blue,
+                        width: 1.6,
+                      ),
+                    ),
+                  ),
+                  onSubmitted: (_) => _lookupTrackReport(),
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _trackLoading ? null : _lookupTrackReport,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.text,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 15),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                    ),
+                    icon: _trackLoading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.white,
+                              ),
+                            ),
+                          )
+                        : const Icon(Icons.arrow_forward_rounded, size: 18),
+                    label: Text(
+                      _trackLoading ? 'Loading progress...' : 'Track progress',
+                    ),
+                  ),
+                ),
+                if (_trackedReport != null) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _trackLoading
+                          ? null
+                          : () => _lookupTrackReport(
+                              reportId: _trackedReport!.id,
+                              allowFallback: false,
+                            ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.text,
+                        backgroundColor: Colors.white,
+                        side: BorderSide(
+                          color: AppColors.border.withValues(alpha: 0.95),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                      icon: const Icon(Icons.refresh_rounded, size: 18),
+                      label: const Text('Refresh details'),
+                    ),
+                  ),
+                ],
+                if ((_lastSubmittedReportId ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton(
+                      onPressed: _trackLoading
+                          ? null
+                          : () => _lookupTrackReport(
+                              reportId: _lastSubmittedReportId,
+                            ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.blue,
+                        backgroundColor: const Color(0xFFEFF6FF),
+                        side: const BorderSide(color: Color(0xFFBFDBFE)),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                      child: Text(
+                        'Use last submitted ID ($_lastSubmittedReportId)',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                Text(
+                  _trackedReport == null
+                      ? 'Tracking is read-only and will not change your report.'
+                      : 'Tracking details loaded successfully.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.muted2,
+                    height: 1.6,
+                  ),
+                ),
+              ],
+            ),
+          );
+
+          if (stacked) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                intro,
+                const SizedBox(height: 20),
+                formCard,
+              ],
+            );
+          }
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(flex: 11, child: intro),
+              const SizedBox(width: 18),
+              Expanded(flex: 9, child: formCard),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildTrackIdleState() {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: AppColors.border),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x120F172A),
+            blurRadius: 20,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'WAITING FOR LOOKUP',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: AppColors.blue,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.4,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Enter a report ID to load the progress view.',
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+              color: AppColors.text,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Once a valid report ID is entered, this page will show the current status, the dispatcher handling the case, the location summary, and how much time has passed since submission.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: AppColors.muted,
+              height: 1.7,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrackResult(TrackReport report) {
+    final landmarkStreet = [report.landmark, report.street]
+        .where((part) => part.trim().isNotEmpty)
+        .join(' | ');
+    final dispatcherDisplay = _trackDispatcherDisplay(report);
+    final dispatcherHandle = _trackDispatcherHandle(report);
+    final lastPassedText = report.passCount > 0
+        ? '${report.lastPassedBy.isEmpty ? 'Dispatcher reassigned the report' : report.lastPassedBy} on ${_formatTrackDateTime(report.lastPassedAt)}'
+        : 'No reassignment yet.';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildTrackSummaryGrid(report),
+        const SizedBox(height: 18),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final stacked = constraints.maxWidth < 920;
+            final locationCard = _buildCard(
+              step: 'LOCATION',
+              title: 'Reported location',
+              subtitle: 'The summary below mirrors the location details attached to the report.',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: Text(
+                      report.location,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: AppColors.text,
+                        fontWeight: FontWeight.w800,
+                        height: 1.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildTrackDetailTile(
+                          label: 'Barangay',
+                          value: report.barangay.isEmpty
+                              ? 'Not available'
+                              : report.barangay,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _buildTrackDetailTile(
+                          label: 'Landmark / Street',
+                          value: landmarkStreet.isEmpty
+                              ? 'Not available'
+                              : landmarkStreet,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+
+            final sideColumn = Column(
+              children: [
+                _buildCard(
+                  step: 'HANDLING',
+                  title: 'Dispatcher activity',
+                  subtitle: 'This section reflects the latest assignment details from the tracking endpoint.',
+                  child: Column(
+                    children: [
+                      _buildTrackDetailTile(
+                        label: 'Current dispatcher',
+                        value: dispatcherDisplay,
+                        note: dispatcherHandle,
+                      ),
+                      const SizedBox(height: 12),
+                      _buildTrackDetailTile(
+                        label: 'Transfer count',
+                        value: '${report.passCount}',
+                      ),
+                      const SizedBox(height: 12),
+                      _buildTrackDetailTile(
+                        label: 'Last handoff',
+                        value: lastPassedText,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+
+            final timelineCard = _buildCard(
+              step: 'TIMELINE',
+              title: 'Progress timeline',
+              subtitle: 'Major milestones are laid out in the same order as the web tracker.',
+              child: _buildTrackTimeline(report),
+            );
+
+            final reportInfoCard = _buildCard(
+              step: 'REPORT INFO',
+              title: 'Submitted details',
+              subtitle: 'Reference details pulled from the submitted record.',
+              child: Column(
+                children: [
+                  _buildTrackInfoRow('Reporter', report.reporterName),
+                  const SizedBox(height: 10),
+                  _buildTrackInfoRow('Type', report.emergencyType),
+                  const SizedBox(height: 10),
+                  _buildTrackInfoRow(
+                    'GPS',
+                    report.gps.isEmpty ? 'Not available' : report.gps,
+                  ),
+                ],
+              ),
+            );
+
+            if (stacked) {
+              return Column(
+                children: [
+                  locationCard,
+                  const SizedBox(height: 18),
+                  sideColumn,
+                  const SizedBox(height: 18),
+                  timelineCard,
+                  const SizedBox(height: 18),
+                  reportInfoCard,
+                ],
+              );
+            }
+
+            return Column(
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 9, child: locationCard),
+                    const SizedBox(width: 18),
+                    Expanded(flex: 13, child: sideColumn),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(flex: 12, child: timelineCard),
+                    const SizedBox(width: 18),
+                    Expanded(flex: 8, child: reportInfoCard),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTrackSummaryGrid(TrackReport report) {
+    final statusMeta = _trackStatusMeta(report.status);
+    final dispatcherDisplay = _trackDispatcherDisplay(report);
+    final dispatcherHandle = _trackDispatcherHandle(report);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth >= 1080
+            ? 4
+            : constraints.maxWidth >= 720
+            ? 2
+            : 1;
+        return GridView.count(
+          crossAxisCount: columns,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          mainAxisSpacing: 14,
+          crossAxisSpacing: 14,
+          childAspectRatio: columns == 4 ? 1.22 : 1.34,
+          children: [
+            _buildTrackMetricCard(
+              label: 'Report ID',
+              value: report.id,
+              helper: 'Use this ID for future follow-up and status checks.',
+            ),
+            _buildTrackMetricCard(
+              label: 'Current Status',
+              helper:
+                  'Status updates reflect the latest dispatcher workflow state.',
+              customValue: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: statusMeta.bg,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: statusMeta.border),
+                ),
+                child: Text(
+                  report.statusLabel,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: statusMeta.fg,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ),
+            ),
+            _buildTrackMetricCard(
+              label: 'Current Dispatcher',
+              value: dispatcherDisplay,
+              helper: dispatcherHandle,
+              helperColor: AppColors.blue,
+            ),
+            _buildTrackMetricCard(
+              label: 'Time Passed',
+              value: _formatTrackElapsed(report.submittedAt),
+              helper: 'Submitted ${_formatTrackDateTime(report.submittedAt)}',
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildTrackMetricCard({
+    required String label,
+    String? value,
+    String? helper,
+    Widget? customValue,
+    Color? helperColor,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.border),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x120F172A),
+            blurRadius: 18,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: AppColors.muted2,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.1,
+            ),
+          ),
+          const SizedBox(height: 12),
+          customValue ??
+              Text(
+                value ?? '-',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: AppColors.text,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+          if ((helper ?? '').isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              helper!,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: helperColor ?? AppColors.muted2,
+                height: 1.6,
+                fontWeight: helperColor != null ? FontWeight.w700 : null,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrackDetailTile({
+    required String label,
+    required String value,
+    String? note,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.88),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: AppColors.muted2,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: AppColors.text,
+              fontWeight: FontWeight.w700,
+              height: 1.55,
+            ),
+          ),
+          if ((note ?? '').isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              note!,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppColors.blue,
+                fontWeight: FontWeight.w700,
+                height: 1.45,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTrackInfoRow(String label, String value) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: RichText(
+        text: TextSpan(
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: AppColors.muted,
+            height: 1.55,
+          ),
+          children: [
+            TextSpan(
+              text: '$label: ',
+              style: const TextStyle(
+                color: AppColors.text,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            TextSpan(text: value.isEmpty ? '-' : value),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTrackTimeline(TrackReport report) {
+    final items = <({String label, String detail, DateTime? time, Color color})>[
+      (
+        label: 'Report submitted',
+        detail: report.reporterName.isEmpty
+            ? 'Submission received'
+            : 'Filed by ${report.reporterName}',
+        time: report.submittedAt,
+        color: AppColors.blue,
+      ),
+      if (report.claimedAt != null)
+        (
+          label: 'Dispatcher claimed',
+          detail: report.claimedBy.isEmpty
+              ? (_trackDispatcherDisplay(report).toLowerCase() ==
+                        'waiting for dispatcher'
+                    ? 'Dispatcher claimed the report'
+                    : _trackDispatcherDisplay(report))
+              : report.claimedBy,
+          time: report.claimedAt,
+          color: AppColors.amber,
+        ),
+      if (report.assignedAt != null)
+        (
+          label: 'Dispatcher assigned',
+          detail: _trackDispatcherDisplay(report).toLowerCase() ==
+                  'waiting for dispatcher'
+              ? 'Dispatcher handling started'
+              : _trackDispatcherDisplay(report),
+          time: report.assignedAt,
+          color: AppColors.amberDeep,
+        ),
+      if (report.lastPassedAt != null)
+        (
+          label: 'Report passed',
+          detail: report.lastPassedBy.isEmpty
+              ? 'Dispatcher handoff recorded'
+              : report.lastPassedBy,
+          time: report.lastPassedAt,
+          color: AppColors.red,
+        ),
+      (
+        label: 'Current status',
+        detail: report.statusLabel,
+        time: report.lastPassedAt ?? report.assignedAt ?? report.submittedAt,
+        color: _trackStatusMeta(report.status).fg,
+      ),
+    ];
+
+    return Column(
+      children: [
+        for (final item in items) ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppColors.border),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x080F172A),
+                  blurRadius: 10,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: item.color.withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: item.color.withValues(alpha: 0.28),
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.circle,
+                    size: 12,
+                    color: item.color,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.label.toUpperCase(),
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: AppColors.muted2,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        item.detail,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.text,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _formatTrackDateTime(item.time),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.muted2,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (item != items.last) const SizedBox(height: 12),
+        ],
+      ],
+    );
+  }
+
   Widget _buildFooter() {
     final year = DateTime.now().year;
     return Padding(
@@ -5991,6 +7451,37 @@ class _SelectChip extends StatelessWidget {
               textAlign: TextAlign.center,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TrackBadge extends StatelessWidget {
+  const _TrackBadge({
+    required this.label,
+    required this.tint,
+    required this.color,
+  });
+
+  final String label;
+  final Color tint;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: tint,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w800,
         ),
       ),
     );
