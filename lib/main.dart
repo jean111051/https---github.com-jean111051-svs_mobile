@@ -79,7 +79,105 @@ class SvsApp extends StatelessWidget {
           labelLarge: GoogleFonts.jetBrainsMono(),
         ),
       ),
-      home: const ReportPage(),
+      home: const LaunchLoadingScreen(),
+    );
+  }
+}
+
+class LaunchLoadingScreen extends StatefulWidget {
+  const LaunchLoadingScreen({super.key});
+
+  @override
+  State<LaunchLoadingScreen> createState() => _LaunchLoadingScreenState();
+}
+
+class _LaunchLoadingScreenState extends State<LaunchLoadingScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _openApp();
+  }
+
+  Future<void> _openApp() async {
+    await Future<void>.delayed(const Duration(seconds: 2));
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder<void>(
+        pageBuilder: (_, __, ___) => const ReportPage(),
+        transitionsBuilder: (_, animation, __, child) =>
+            FadeTransition(opacity: animation, child: child),
+        transitionDuration: const Duration(milliseconds: 350),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [AppColors.blue, AppColors.bgSoft],
+          ),
+        ),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 92,
+                  height: 92,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.18),
+                    ),
+                  ),
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.verified_user_rounded,
+                    size: 48,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Smart Verification System',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Loading emergency reporting tools...',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: Colors.white.withValues(alpha: 0.86),
+                  ),
+                ),
+                const SizedBox(height: 28),
+                const SizedBox(
+                  width: 34,
+                  height: 34,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -429,6 +527,18 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
         _baseUrl = baseUrl.trim();
       }
     });
+    _syncTrackIdInput(lastSubmittedReportId);
+  }
+
+  void _syncTrackIdInput(String? reportId, {bool force = false}) {
+    final normalized = _normalizeTrackId(reportId ?? '');
+    if (normalized.isEmpty) return;
+    if (!force && _trackIdFocusNode.hasFocus) return;
+    if (_trackIdCtrl.text == normalized) return;
+    _trackIdCtrl.value = TextEditingValue(
+      text: normalized,
+      selection: TextSelection.collapsed(offset: normalized.length),
+    );
   }
 
   String _normalizedBaseUrl(String input) {
@@ -609,6 +719,7 @@ class _ReportPageState extends State<ReportPage> with WidgetsBindingObserver {
     setState(() {
       _lastSubmittedReportId = normalized;
     });
+    _syncTrackIdInput(normalized);
   }
 
   Future<void> _cacheTrackReport(Map<String, dynamic> payload) async {
